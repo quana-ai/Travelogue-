@@ -9,5 +9,6 @@ coverage
 .tesseract-cache/
 *.log
 *.tsbuildinfo
+*.traineddata
 backend/prisma/*.db
 backend/uploads/

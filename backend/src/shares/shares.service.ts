@@ -155,11 +155,14 @@ export class SharesService {
   }
 
   private presentBill(bill: any) {
+    const merchant = this.cryptoService.decryptField(bill.encryptedMerchant);
+    const total = this.cryptoService.decryptField(bill.encryptedTotal);
+
     return {
       id: bill.id,
-      merchant: this.cryptoService.decryptField(bill.encryptedMerchant) || 'Unknown Merchant',
+      merchant: bill.status === 'INVALID_DOCUMENT' ? 'Not a bill' : merchant || 'Unknown Merchant',
       billNo: this.cryptoService.decryptField(bill.encryptedBillNo),
-      total: this.cryptoService.decryptField(bill.encryptedTotal) || '0.00',
+      total: bill.status === 'INVALID_DOCUMENT' ? '' : total || '0.00',
       tax: this.cryptoService.decryptField(bill.encryptedTax),
       currency: bill.currency,
       payment: this.cryptoService.decryptField(bill.encryptedPayment),

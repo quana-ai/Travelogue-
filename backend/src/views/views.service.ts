@@ -23,6 +23,7 @@ export class ViewsService {
   }
 
   async createView(userId: string, name: string) {
+    if (!name || typeof name !== 'string') throw new BadRequestException('View name cannot be empty');
     const cleanName = name.trim();
     if (!cleanName) throw new BadRequestException('View name cannot be empty');
 
@@ -37,6 +38,13 @@ export class ViewsService {
   }
 
   async addBillsToView(userId: string, viewId: string, billIds: string[]) {
+    if (!viewId || typeof viewId !== 'string' || !viewId.trim()) {
+      throw new BadRequestException('View ID is required');
+    }
+    if (!Array.isArray(billIds) || billIds.length === 0) {
+      throw new BadRequestException('At least one bill ID must be provided');
+    }
+
     const view = await this.prisma.view.findFirst({
       where: { id: viewId, userId },
     });
@@ -84,6 +92,7 @@ export class ViewsService {
   }
 
   async createCategory(name: string, subcategories: string[] = ['General']) {
+    if (!name || typeof name !== 'string') throw new BadRequestException('Category name cannot be empty');
     const cleanName = name.trim();
     if (!cleanName) throw new BadRequestException('Category name cannot be empty');
 

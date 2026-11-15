@@ -220,7 +220,7 @@ export default function Home() {
     outgoing.forEach((share: any) => {
       const targetName = share.targetType === 'bill'
         ? share.targetId
-        : viewData.find((view: any) => view.id === share.targetId)?.name;
+        : (share.targetName || viewData.find((view: any) => view.id === share.targetId)?.name);
       if (!targetName) return;
       const key = `${share.targetType === 'bill' ? 'b' : 'v'}:${targetName}`;
       const end = share.expiresAt
@@ -249,15 +249,18 @@ export default function Home() {
   };
 
   const refreshSharing = async () => {
-    const [outgoing, incoming] = await Promise.all([
+    const [outgoing, incoming, currentViews] = await Promise.all([
       api.getOutgoingShares(),
       api.getIncomingShares(),
+      api.getViews(),
     ]);
+    setViews(currentViews);
+    setConts(currentViews.map((view: any) => view.name));
     const outgoingShares: Record<string, { id?: string; to: string; end: string }[]> = {};
     outgoing.forEach((share: any) => {
       const targetName = share.targetType === 'bill'
         ? share.targetId
-        : views.find((view: any) => view.id === share.targetId)?.name;
+        : (share.targetName || currentViews.find((view: any) => view.id === share.targetId)?.name);
       if (!targetName) return;
       const key = `${share.targetType === 'bill' ? 'b' : 'v'}:${targetName}`;
       const end = share.expiresAt
@@ -611,10 +614,10 @@ export default function Home() {
       setBills((current) => [...current.filter((bill) => bill.id !== billId), pendingBill]);
 
       let result: any;
-      for (let attempt = 0; attempt < 20; attempt++) {
+      for (let attempt = 0; attempt < 45; attempt++) {
         result = await api.getExtraction(billId);
         if (result.status !== 'PROCESSING') break;
-        await new Promise((resolve) => setTimeout(resolve, 600));
+        await new Promise((resolve) => setTimeout(resolve, 800));
       }
 
       if (!result || result.status === 'PROCESSING') {
@@ -808,7 +811,9 @@ export default function Home() {
       const url = URL.createObjectURL(file);
       const link = document.createElement('a');
       link.href = url;
-      link.download = `${bill.m || 'bill'}-${bill.id}`;
+      const fileType = file.type || bill.mimeType || '';
+      const ext = fileType === 'application/pdf' ? '.pdf' : fileType === 'image/png' ? '.png' : fileType === 'image/jpeg' ? '.jpg' : '.png';
+      link.download = `${bill.m || 'bill'}-${bill.id}${ext}`;
       document.body.appendChild(link);
       link.click();
       link.remove();
@@ -951,9 +956,10 @@ export default function Home() {
       to = digits.length === 10 ? `+91${digits}` : `+${digits}`;
     }
     const targetType = shareKey.startsWith('b:') ? 'bill' : 'view';
+    const targetIdentifier = shareKey.slice(2);
     const targetId = targetType === 'bill'
-      ? shareId
-      : views.find((view: any) => view.name === shareId)?.id;
+      ? targetIdentifier
+      : views.find((view: any) => view.name === targetIdentifier)?.id;
     if (!targetId) { setShareMsg('The selected bill or view is no longer available.'); return; }
     const cOf = { name: to, email: to };
     const expiresInDays = shareExpiry === 'In 7 days' ? 7 : shareExpiry === 'In 30 days' ? 30 : shareExpiry === 'In 90 days' ? 90 : undefined;
@@ -965,6 +971,8 @@ export default function Home() {
         expiresInDays,
       });
       await refreshSharing();
+      setShareRecipientSelection('');
+      setShareNewVal('');
       setShareMsg('Shared with ' + cOf.name);
       toast('Shared with ' + cOf.name);
     } catch (error) {
@@ -1070,14 +1078,17 @@ export default function Home() {
       if (own) openBillModal(b.id);
       else void openSharedBill(b);
     }}>
-      <span className="g"><b>{b.m}</b><span className="sm mut">{fdate(b.date)} · {b.sub}</span></span>
+      <span className="g"><b>{b.m}</b><span className="sm mut">{fdate(b.date)}{b.sub ? ` · ${b.sub}` : ''}</span></span>
       <span className="amt">{money(b.total, b.cur)}</span>
     </button>
   );
 
   const GroupCard = ({ entry, own }: { entry: { who: { name: string; email: string }; bills: any[] }; own: boolean }) => {
     const bc: Record<string, any[]> = {};
-    entry.bills.forEach(b => { (bc[b.cat] = bc[b.cat] || []).push(b); });
+    entry.bills.forEach(b => {
+      const cat = b.cat || 'Uncategorized';
+      (bc[cat] = bc[cat] || []).push(b);
+    });
     return (
       <div className="card grp">
         <div className="gh">
@@ -1091,7 +1102,7 @@ export default function Home() {
         {Object.entries(bc).map(([cat, bls]) => (
           <div key={cat} className="gc">
             <div className="gt"><b>{cat}</b><span className="pill">{bls.length} bill{bls.length === 1 ? '' : 's'}</span></div>
-            {bls.map(b => <RowBill key={b.id} b={b} own={own} />)}
+            {bls.map(b => <RowBill key={b.id} b={{ ...b, by: entry.who.name }} own={own} />)}
           </div>
         ))}
       </div>
@@ -1656,7 +1667,13 @@ export default function Home() {
                         <h2 style={{ margin: '16px 0 2px' }}>{incomingShared[sharedView].name}</h2>
                         <p className="mut sm">Shared by <strong>{incomingShared[sharedView].by.name}</strong> · {incomingShared[sharedView].by.email}</p>
                         <div className="card" style={{ padding: '8px 16px' }}>
-                          {incomingShared[sharedView].bills.map((b: any) => <RowBill key={b.id} b={b} own={false} />)}
+                          {incomingShared[sharedView].bills.map((b: any) => (
+                            <RowBill
+                              key={b.id}
+                              b={{ ...b, by: incomingShared[sharedView].by.name, grp: incomingShared[sharedView].name }}
+                              own={false}
+                            />
+                          ))}
                         </div>
                       </>
                     )}
@@ -1800,7 +1817,7 @@ export default function Home() {
             <dt>Tax</dt><dd>{money(modalBill.tax, modalBill.cur)}</dd>
             <dt>Payment</dt><dd>{modalBill.pay || 'Not available'}</dd>
             <dt>View</dt><dd>{modalBill.cont}</dd>
-            <dt>Category</dt><dd>{modalBill.cat} / {modalBill.sub}</dd>
+            <dt>Category</dt><dd>{modalBill.cat && modalBill.sub ? `${modalBill.cat} / ${modalBill.sub}` : modalBill.cat || 'Not categorized'}</dd>
             <dt>Type</dt><dd>{modalBill.pers ? 'Personal' : 'Business'}</dd>
             <dt>Status</dt><dd>{modalBill.st}</dd>
           </dl>
@@ -1812,7 +1829,8 @@ export default function Home() {
             <button className="btn" style={{ flex: '0 0 auto' }} onClick={moveBill}>Move</button>
           </div>
           <div className="acts">
-            <button className="btn p ic" onClick={() => { setModal('none'); openShare('b', modalBill.id); }}><ShareIcon />Share</button>
+            <button className="btn p" onClick={() => void downloadBill(modalBill)}>Download</button>
+            <button className="btn ic" onClick={() => { setModal('none'); openShare('b', modalBill.id); }}><ShareIcon />Share</button>
             <button className="btn" onClick={() => setModal('none')}>Close</button>
           </div>
         </dialog>
@@ -1948,9 +1966,9 @@ export default function Home() {
             <dt>Total</dt><dd>{money(sharedViewBill.total, sharedViewBill.cur)}</dd>
             <dt>Tax</dt><dd>{money(sharedViewBill.tax, sharedViewBill.cur)}</dd>
             <dt>Payment</dt><dd>{sharedViewBill.pay || 'Not available'}</dd>
-            <dt>Category</dt><dd>{sharedViewBill.cat} / {sharedViewBill.sub}</dd>
+            <dt>Category</dt><dd>{sharedViewBill.cat && sharedViewBill.sub ? `${sharedViewBill.cat} / ${sharedViewBill.sub}` : sharedViewBill.cat || 'Not categorized'}</dd>
             {sharedViewBill.by && <><dt>Shared by</dt><dd>{sharedViewBill.by}</dd></>}
-            {sharedViewBill.grp && <><dt>View</dt><dd>{sharedViewBill.grp}</dd></>}
+            {(sharedViewBill.grp || sharedViewBill.cont) && <><dt>View</dt><dd>{sharedViewBill.grp || sharedViewBill.cont}</dd></>}
           </dl>
           <p className="mut sm">You can view and download only.</p>
           <div className="acts">

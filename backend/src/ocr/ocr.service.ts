@@ -109,10 +109,14 @@ export class OcrService implements OnModuleDestroy {
 
   private parseReceiptText(text: string): OcrResult {
     const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-    const readableLines = lines.filter((line) => !/^(tax invoice|invoice|receipt|bill|thank you)\b/i.test(line));
-    const merchant = readableLines[0] || '';
+    const readableLines = lines.filter((line) =>
+      !/^(?:[*#=~_\-\s]*)(tax invoice|invoice|receipt|bill|thank you|welcome)\b/i.test(line)
+      && !/^(?:[*#=~_\-\s]*)(date|dated|invoice date|tel|phone|ph|gstin|fssai|cin)\b/i.test(line)
+      && !this.parseDate(line),
+    );
+    const merchant = (readableLines[0] || '').replace(/^[*#=~_\-\s]+|[*#=~_\-\s]+$/g, '');
     const dateLine = lines.find((line) => /\b(?:date|dated|invoice date)\b/i.test(line) || this.parseDate(line));
-    const billNumberLine = lines.find((line) => /\b(?:invoice|bill|receipt)\s*(?:no\.?|number|#|:)\b/i.test(line));
+    const billNumberLine = lines.find((line) => /\b(?:invoice|bill|receipt|order|inv\.?)\b.*?(?:no\.?|number|#|:)/i.test(line));
     const totalLine = [...lines].reverse().find((line) =>
       /\b(?:grand\s+total|total\s+amount|amount\s+(?:due|paid)|balance\s+due|net\s+payable|total)\b/i.test(line)
       && !/\b(?:sub\s*total|taxable)\b/i.test(line)
@@ -122,7 +126,7 @@ export class OcrService implements OnModuleDestroy {
     const paymentLine = lines.find((line) => /\b(?:cash|credit card|debit card|visa|mastercard|upi|payment|paid by)\b/i.test(line));
 
     const date = dateLine ? this.parseDate(dateLine) : '';
-    const billNoMatch = billNumberLine?.match(/(?:no\.?|number|#|:)\s*([A-Z0-9][A-Z0-9./_-]{2,})/i);
+    const billNoMatch = billNumberLine?.match(/(?:no\.?|number|#|:)\s*([A-Z0-9][A-Z0-9./_-]*)/i);
     const hasReceiptHeading = /\b(?:receipt|tax invoice|invoice|bill)\b/i.test(text);
     const hasTransactionDetails = Boolean(
       totalLine || billNoMatch || date || (taxLine && this.parseAmount(taxLine)) || paymentLine,
@@ -174,8 +178,21 @@ export class OcrService implements OnModuleDestroy {
   }
 
   private parseAmount(text: string): string {
-    const match = text.match(/(?:₹|INR|Rs\.?|USD|\$|EUR|€|GBP|£)?\s*([0-9][0-9,]*(?:\.\d{1,2})?)/i);
-    return match?.[1].replace(/,/g, '') || '';
+    // Strip percentage figures first so tax rates like '5%' are not parsed as monetary amounts
+    const cleaned = text.replace(/\b\d+(?:\.\d+)?\s*%/g, '');
+
+    // 1. Try amount preceded or followed by currency symbol/name
+    const currMatch = cleaned.match(/(?:₹|INR|Rs\.?|USD|\$|EUR|€|GBP|£)\s*([0-9][0-9,]*(?:\.\d{1,2})?)/i)
+      || cleaned.match(/([0-9][0-9,]*(?:\.\d{1,2})?)\s*(?:₹|INR|Rs\.?|USD|\$|EUR|€|GBP|£)/i);
+    if (currMatch) return currMatch[1].replace(/,/g, '');
+
+    // 2. Try decimal amounts (e.g. 250.00)
+    const decimalMatches = [...cleaned.matchAll(/\b([0-9][0-9,]*\.\d{2})\b/g)];
+    if (decimalMatches.length) return decimalMatches[decimalMatches.length - 1][1].replace(/,/g, '');
+
+    // 3. Fallback to general monetary amount
+    const matches = [...cleaned.matchAll(/\b([0-9][0-9,]*(?:\.\d{1,2})?)\b/g)];
+    return matches.length ? matches[matches.length - 1][1].replace(/,/g, '') : '';
   }
 
   private parseDate(text: string): string {
@@ -183,11 +200,24 @@ export class OcrService implements OnModuleDestroy {
     if (iso) return `${iso[1]}-${iso[2].padStart(2, '0')}-${iso[3].padStart(2, '0')}`;
 
     const dayFirst = text.match(/\b(\d{1,2})[-/.](\d{1,2})[-/.](20\d{2})\b/);
-    if (dayFirst) return `${dayFirst[3]}-${dayFirst[2].padStart(2, '0')}-${dayFirst[1].padStart(2, '0')}`;
+    if (dayFirst) {
+      const part1 = parseInt(dayFirst[1], 10);
+      const part2 = parseInt(dayFirst[2], 10);
+      // If second part > 12 and first part <= 12, it is MM/DD/YYYY format
+      if (part2 > 12 && part1 <= 12) {
+        return `${dayFirst[3]}-${dayFirst[1].padStart(2, '0')}-${dayFirst[2].padStart(2, '0')}`;
+      }
+      return `${dayFirst[3]}-${dayFirst[2].padStart(2, '0')}-${dayFirst[1].padStart(2, '0')}`;
+    }
 
     const monthName = text.match(/\b(?:\d{1,2}\s+[A-Za-z]{3,9}\s+20\d{2}|[A-Za-z]{3,9}\s+\d{1,2},?\s+20\d{2})\b/);
     if (!monthName) return '';
     const parsed = new Date(monthName[0]);
-    return Number.isNaN(parsed.getTime()) ? '' : parsed.toISOString().slice(0, 10);
+    if (Number.isNaN(parsed.getTime())) return '';
+    // Format local calendar date YYYY-MM-DD without UTC timezone offset shift
+    const year = parsed.getFullYear();
+    const month = String(parsed.getMonth() + 1).padStart(2, '0');
+    const day = String(parsed.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
   }
 }

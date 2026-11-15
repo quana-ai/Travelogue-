@@ -166,7 +166,7 @@ export class BillsService {
         encryptedTotal,
         encryptedTax,
         encryptedPayment,
-        date: dto.date || new Date().toISOString().slice(0, 10),
+        date: dto.date || new Date().toLocaleDateString('en-CA'),
         currency: dto.currency || 'INR',
         viewId: dto.viewId || bill.viewId,
         category: dto.category || bill.category,
@@ -199,12 +199,12 @@ export class BillsService {
 
     // Date filtering
     if (query.dateFilter === '30') {
-      const thirtyDaysAgo = new Date(Date.now() - 30 * 864e5).toISOString().slice(0, 10);
+      const thirtyDaysAgo = new Date(Date.now() - 30 * 864e5).toLocaleDateString('en-CA');
       where.date = { gte: thirtyDaysAgo };
     } else if (query.dateFilter === 'prev') {
       const now = new Date();
-      const firstDayPrev = new Date(now.getFullYear(), now.getMonth() - 1, 1).toISOString().slice(0, 10);
-      const lastDayPrev = new Date(now.getFullYear(), now.getMonth(), 0).toISOString().slice(0, 10);
+      const firstDayPrev = new Date(now.getFullYear(), now.getMonth() - 1, 1).toLocaleDateString('en-CA');
+      const lastDayPrev = new Date(now.getFullYear(), now.getMonth(), 0).toLocaleDateString('en-CA');
       where.date = { gte: firstDayPrev, lte: lastDayPrev };
     } else if (query.fromDate || query.toDate) {
       where.date = {};
@@ -297,6 +297,13 @@ export class BillsService {
    * Move bill to a different view.
    */
   async moveBill(userId: string, billId: string, targetViewId: string) {
+    if (!billId || typeof billId !== 'string' || !billId.trim()) {
+      throw new BadRequestException('Bill ID is required');
+    }
+    if (!targetViewId || typeof targetViewId !== 'string' || !targetViewId.trim()) {
+      throw new BadRequestException('Target view ID is required');
+    }
+
     const bill = await this.prisma.bill.findFirst({
       where: { id: billId, userId },
     });
