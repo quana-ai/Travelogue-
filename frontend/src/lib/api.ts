@@ -140,7 +140,23 @@ export const api = {
       body: JSON.stringify({ billIds }),
     }),
 
-  getBillFile: (billId: string) => requestBlob(`/bills/${billId}/file`),
+  getBillFile: async (billId: string) => {
+    try {
+      const blob = await requestBlob(`/bills/${billId}/file`);
+      if (blob.type && !blob.type.startsWith('image/') && blob.type !== 'application/pdf'
+        && blob.type !== 'application/octet-stream') {
+        console.error('Bill file endpoint returned an unsupported content type.', {
+          billId,
+          contentType: blob.type,
+        });
+        throw new Error('Unsupported bill file type.');
+      }
+      return blob;
+    } catch (error) {
+      console.error('Bill file request failed.', { billId, error });
+      throw new Error('Could not load the bill file. Please try again.');
+    }
+  },
 
   // Sharing
   getOutgoingShares: () => request('/shares/outgoing'),

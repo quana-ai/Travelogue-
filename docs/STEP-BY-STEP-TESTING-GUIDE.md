@@ -18,6 +18,7 @@ If GitHub reports **Repository not found**, first check that the URL is exactly 
 ## 1. Prerequisites
 
 - Node.js 22.13 or newer and npm installed.
+- Python 3.9 or newer available as `python3` (or configure `PADDLE_OCR_PYTHON` to its executable).
 - Git installed and a terminal opened at the cloned repository root.
 - Dependencies installed in both `frontend/` and `backend/` if this is a fresh checkout.
 - The backend environment configured before starting the API.
@@ -44,6 +45,16 @@ FRONTEND_ORIGINS="http://localhost:3000,http://127.0.0.1:3000"
 ```
 
 Use local-only secrets and keep this file private. The encryption key must remain the same for as long as encrypted data needs to be read. Changing it makes existing encrypted fields and files undecryptable. Production requires secure secret/key management and production OTP delivery is not implemented.
+
+Install the local PaddleOCR runtime from the `backend/` directory. A virtual environment is recommended:
+
+```sh
+python3 -m venv .venv-ocr
+source .venv-ocr/bin/activate
+python -m pip install -r src/ocr/requirements.txt
+```
+
+Keep the virtual environment active in the terminal used to start the backend, or set `PADDLE_OCR_PYTHON` to its Python executable. The first OCR request downloads the PP-OCRv6_medium model files and can take longer; subsequent requests use the local cache. No cloud OCR API is called.
 
 Apply migrations and start the API:
 
@@ -91,7 +102,9 @@ The OTP is a fixed development code. No email or WhatsApp message is sent. Do no
 10. Verify the bill appears in the bill list with an appropriate status.
 11. Open the bill file and confirm the uploaded image/PDF can be retrieved.
 
-**OCR test expectation:** the backend runs Tesseract.js locally using a bundled English model. It recognizes image content and renders PDF pages locally (up to 10 pages) before recognition. Text patterns estimate common receipt fields; values are marked uncertain and require manual correction. Test with clear, non-sensitive receipt images and PDFs. OCR accuracy has not been benchmarked, and multilingual receipts or unusual layouts may produce missing or incorrect fields.
+**OCR test expectation:** the backend runs PaddleOCR locally using its PP-OCRv6_medium multilingual pipeline. It recognizes image content and renders PDF pages locally (up to 10 pages) before recognition. Text patterns estimate common receipt fields; values are marked uncertain and require manual correction. Test with clear, non-sensitive receipt images and PDFs, including visible amounts and currency symbols. OCR accuracy has not been benchmarked; review and correct extracted fields.
+
+**Image preview test:** open a saved bill and verify its original image displays in the detail dialog. Repeat with a shared bill. If a file cannot be loaded, the UI should show a short retry message; detailed request errors should be in the browser developer console.
 
 **Non-bill test:** upload a non-receipt image (for example, a landscape photo). The app should show a clear “does not look like a bill or receipt” message with guidance to upload a sharp, well-lit bill, invoice, or receipt. It should not fill the form with unrelated text or a default category, and it must not allow the upload to be confirmed as an expense. The bill list should label the upload “Not a bill” and show no amount.
 

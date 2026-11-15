@@ -776,13 +776,15 @@ export default function Home() {
     setModal('billDetail');
     try {
       const file = await api.getBillFile(String(b.id));
+      const mimeType = !file.type || file.type === 'application/octet-stream' ? b.mimeType : file.type;
       setModalBill((current: any) => current?.id === b.id
-        ? { ...current, img: URL.createObjectURL(file), mimeType: file.type }
+        ? { ...current, img: URL.createObjectURL(file), mimeType }
         : current);
       setBillFileStatus('ready');
     } catch (error) {
+      console.error('Could not load bill preview.', { billId: b.id, error });
       setBillFileStatus('error');
-      toast(`Could not load bill file: ${error instanceof Error ? error.message : 'Request failed'}`);
+      toast('Could not open this bill file. Please try again.');
     }
   };
 
@@ -792,13 +794,15 @@ export default function Home() {
     setModal('sharedBill');
     try {
       const file = await api.getBillFile(String(bill.id));
+      const mimeType = !file.type || file.type === 'application/octet-stream' ? bill.mimeType : file.type;
       setSharedViewBill((current: any) => current?.id === bill.id
-        ? { ...current, img: URL.createObjectURL(file), mimeType: file.type }
+        ? { ...current, img: URL.createObjectURL(file), mimeType }
         : current);
       setBillFileStatus('ready');
     } catch (error) {
+      console.error('Could not load shared bill preview.', { billId: bill.id, error });
       setBillFileStatus('error');
-      toast(`Could not load shared bill: ${error instanceof Error ? error.message : 'Request failed'}`);
+      toast('Could not open this bill file. Please try again.');
     }
   };
 
@@ -814,7 +818,8 @@ export default function Home() {
       link.remove();
       window.setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch (error) {
-      toast(`Could not download bill: ${error instanceof Error ? error.message : 'Request failed'}`);
+      console.error('Could not download bill file.', { billId: bill.id, error });
+      toast('Could not download this bill file. Please try again.');
     }
   };
 
@@ -1789,10 +1794,18 @@ export default function Home() {
           {billFileStatus === 'loading'
             ? <p className="mut" role="status">Loading bill file…</p>
             : billFileStatus === 'error'
-              ? <div className="msg err" role="alert">The original bill file could not be loaded.</div>
+              ? <div className="msg err" role="alert">We couldn’t open this bill file. Try closing and opening it again.</div>
               : modalBill.mimeType === 'application/pdf'
-                ? <iframe className="pdf-preview" src={modalBill.img} title="Bill PDF" />
-                : <img className="prev" src={modalBill.img} alt="Bill image" />}
+                ? <iframe className="pdf-preview" src={modalBill.img} title="Bill PDF"
+                    onError={() => {
+                      console.error('Bill PDF preview could not be rendered.', { billId: modalBill.id });
+                      setBillFileStatus('error');
+                    }} />
+                : <img className="prev" src={modalBill.img} alt="Bill image"
+                    onError={() => {
+                      console.error('Bill image preview could not be rendered.', { billId: modalBill.id, mimeType: modalBill.mimeType });
+                      setBillFileStatus('error');
+                    }} />}
           <dl>
             <dt>Date</dt><dd>{fdate(modalBill.date)}</dd>
             <dt>Bill number</dt><dd>{modalBill.no || 'Not available'}</dd>
@@ -1938,10 +1951,18 @@ export default function Home() {
           {billFileStatus === 'loading'
             ? <p className="mut" role="status">Loading bill file…</p>
             : billFileStatus === 'error'
-              ? <div className="msg err" role="alert">The original bill file could not be loaded.</div>
+              ? <div className="msg err" role="alert">We couldn’t open this bill file. Try closing and opening it again.</div>
               : sharedViewBill.mimeType === 'application/pdf'
-                ? <iframe className="pdf-preview" src={sharedViewBill.img} title="Shared bill PDF" />
-                : <img className="prev" src={sharedViewBill.img} alt="Bill image" />}
+                ? <iframe className="pdf-preview" src={sharedViewBill.img} title="Shared bill PDF"
+                    onError={() => {
+                      console.error('Shared bill PDF preview could not be rendered.', { billId: sharedViewBill.id });
+                      setBillFileStatus('error');
+                    }} />
+                : <img className="prev" src={sharedViewBill.img} alt="Bill image"
+                    onError={() => {
+                      console.error('Shared bill image preview could not be rendered.', { billId: sharedViewBill.id, mimeType: sharedViewBill.mimeType });
+                      setBillFileStatus('error');
+                    }} />}
           <dl>
             <dt>Date</dt><dd>{fdate(sharedViewBill.date)}</dd>
             <dt>Bill number</dt><dd>{sharedViewBill.no || 'Not available'}</dd>

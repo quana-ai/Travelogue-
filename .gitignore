@@ -7,6 +7,9 @@ node_modules/
 dist/
 coverage
 .tesseract-cache/
+.paddlex/
+.venv-ocr/
+__pycache__/
 *.log
 *.tsbuildinfo
 backend/prisma/*.db

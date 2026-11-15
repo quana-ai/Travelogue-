@@ -1,7 +1,7 @@
 import { Injectable, OnModuleDestroy } from '@nestjs/common';
+import { ChildProcessWithoutNullStreams, spawn } from 'child_process';
 import { createCanvas } from '@napi-rs/canvas';
 import * as path from 'path';
-import Tesseract = require('tesseract.js');
 import type { PDFDocumentProxy } from 'pdfjs-dist';
 
 export interface ExtractedField {
@@ -23,10 +23,21 @@ export interface OcrResult {
 
 type PdfJs = typeof import('pdfjs-dist');
 
+interface WorkerResponse {
+  text?: string;
+  error?: string;
+}
+
 @Injectable()
 export class OcrService implements OnModuleDestroy {
   private readonly maxPdfPages = 10;
-  private workerPromise: Promise<Tesseract.Worker> | null = null;
+  private workerProcess: ChildProcessWithoutNullStreams | null = null;
+  private stdoutBuffer = '';
+  private pendingResponse: {
+    resolve: (text: string) => void;
+    reject: (error: Error) => void;
+    timeout: NodeJS.Timeout;
+  } | null = null;
   private queue: Promise<void> = Promise.resolve();
 
   async processBillImage(buffer: Buffer, mimeType: string): Promise<OcrResult> {
@@ -35,11 +46,9 @@ export class OcrService implements OnModuleDestroy {
       : [buffer];
 
     const recognition = this.queue.then(async () => {
-      const worker = await this.getWorker();
       const texts: string[] = [];
       for (const page of pages) {
-        const result = await worker.recognize(page);
-        texts.push(result.data.text);
+        texts.push(await this.recognizePage(page));
       }
       return texts.join('\n');
     });
@@ -49,27 +58,103 @@ export class OcrService implements OnModuleDestroy {
   }
 
   async onModuleDestroy() {
-    const worker = await this.workerPromise?.catch(() => null);
-    if (worker) await worker.terminate();
+    if (this.pendingResponse) {
+      clearTimeout(this.pendingResponse.timeout);
+      this.pendingResponse.reject(new Error('PaddleOCR worker stopped.'));
+      this.pendingResponse = null;
+    }
+    this.workerProcess?.kill();
+    this.workerProcess = null;
   }
 
-  private async getWorker(): Promise<Tesseract.Worker> {
-    if (!this.workerPromise) {
-      const languageDataPath = process.env.TESSDATA_PATH
-        || path.join(path.dirname(require.resolve('@tesseract.js-data/eng')), '4.0.0');
-      this.workerPromise = Tesseract.createWorker('eng', Tesseract.OEM.LSTM_ONLY, {
-        langPath: languageDataPath,
-        cachePath: process.env.TESSERACT_CACHE_PATH || path.join(process.cwd(), '.tesseract-cache'),
-        gzip: true,
+  private recognizePage(buffer: Buffer): Promise<string> {
+    const worker = this.getWorkerProcess();
+
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.pendingResponse = null;
+        worker.kill();
+        reject(new Error('PaddleOCR recognition timed out.'));
+      }, 5 * 60 * 1000);
+      this.pendingResponse = { resolve, reject, timeout };
+
+      worker.stdin.write(JSON.stringify({ image: buffer.toString('base64') }) + '\n', (error) => {
+        if (!error) return;
+        clearTimeout(timeout);
+        this.pendingResponse = null;
+        reject(error);
       });
+    });
+  }
+
+  private getWorkerProcess(): ChildProcessWithoutNullStreams {
+    if (this.workerProcess && this.workerProcess.exitCode === null && !this.workerProcess.killed) {
+      return this.workerProcess;
     }
 
-    try {
-      return await this.workerPromise;
-    } catch (error) {
-      this.workerPromise = null;
-      throw error;
+    const python = process.env.PADDLE_OCR_PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
+    const scriptPath = path.join(__dirname, 'paddle_worker.py');
+    const cachePath = process.env.PADDLE_PDX_CACHE_HOME || path.join(process.cwd(), '.paddlex');
+    const worker = spawn(python, [scriptPath], {
+      stdio: 'pipe',
+      env: { ...process.env, PADDLE_PDX_CACHE_HOME: cachePath },
+    });
+    this.workerProcess = worker;
+    this.stdoutBuffer = '';
+
+    worker.stdout.on('data', (chunk: Buffer) => {
+      this.stdoutBuffer += chunk.toString('utf8');
+      const lines = this.stdoutBuffer.split(/\r?\n/);
+      this.stdoutBuffer = lines.pop() || '';
+      for (const line of lines) this.handleWorkerResponse(line);
+    });
+    worker.stderr.on('data', (chunk: Buffer) => {
+      const message = chunk.toString('utf8').trim();
+      if (message) console.error('[PaddleOCR worker]', message);
+    });
+    worker.on('error', (error) => this.failWorker(error));
+    worker.on('exit', (code, signal) => {
+      if (this.workerProcess === worker) this.workerProcess = null;
+      if (this.pendingResponse) {
+        this.failWorker(new Error(`PaddleOCR worker exited (code ${code}, signal ${signal}).`));
+      }
+    });
+
+    return worker;
+  }
+
+  private handleWorkerResponse(line: string) {
+    const pending = this.pendingResponse;
+    if (!pending) {
+      if (line.trim()) console.error('[PaddleOCR worker] Unexpected output:', line);
+      return;
     }
+
+    let response: WorkerResponse;
+    try {
+      response = JSON.parse(line) as WorkerResponse;
+    } catch (error) {
+      console.error('[PaddleOCR worker] Invalid response:', error);
+      this.failWorker(new Error('PaddleOCR worker returned an invalid response.'));
+      return;
+    }
+
+    clearTimeout(pending.timeout);
+    this.pendingResponse = null;
+    if (response.error) {
+      console.error('[PaddleOCR worker] Recognition error:', response.error);
+      pending.reject(new Error('PaddleOCR could not process this document.'));
+    } else {
+      pending.resolve(response.text || '');
+    }
+  }
+
+  private failWorker(error: Error) {
+    const pending = this.pendingResponse;
+    if (!pending) return;
+    clearTimeout(pending.timeout);
+    this.pendingResponse = null;
+    pending.reject(error);
   }
 
   private async renderPdfPages(buffer: Buffer): Promise<Buffer[]> {
@@ -136,7 +221,9 @@ export class OcrService implements OnModuleDestroy {
         ? 'USD'
         : /\bEUR\b|€/i.test(text)
           ? 'EUR'
-          : '';
+          : /\bGBP\b|£/i.test(text)
+            ? 'GBP'
+            : '';
 
     if (!isReceipt) {
       return {

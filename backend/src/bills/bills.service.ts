@@ -91,7 +91,7 @@ export class BillsService {
             tax: { value: '', confidence: 'missing' },
             currency: { value: '', confidence: 'missing' },
             payment: { value: '', confidence: 'missing' },
-            error: 'Local text extraction could not process this document. Enter the bill details manually.',
+            error: 'Local OCR could not process this document. Try a clear image or PDF, or enter the bill details manually.',
           }),
         },
       });

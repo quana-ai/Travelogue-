@@ -14,7 +14,7 @@ This checkout's earlier README referenced `prototype.html` and `technical-design
 ## Application
 
 - `../frontend/`: responsive Next.js application. Authentication, bill capture/upload, OCR review, bill filtering and details, views, categories, and sharing use the API.
-- `../backend/`: NestJS API with Prisma/SQLite persistence, JWT authentication, encrypted bill fields and files, local Tesseract.js OCR for images and rendered PDF pages, views/categories, and read-only expiring shares.
+- `../backend/`: NestJS API with Prisma/SQLite persistence, JWT authentication, encrypted bill fields and files, local PaddleOCR for images and rendered PDF pages, views/categories, and read-only expiring shares.
 - `../backend/prisma/`: Prisma schema and migrations.
 
 ## Local development
@@ -36,6 +36,6 @@ npm run dev
 
 The local development OTP is `123456`; the API states explicitly that no email or WhatsApp message was sent. Production email/WhatsApp delivery is not implemented; OTP requests deliberately return an error in production instead of claiming a code was sent.
 
-OCR uses Tesseract.js with a bundled English model for local image recognition. PDF pages are rendered locally with PDF.js and `@napi-rs/canvas` before recognition. Common receipt fields are estimated with text-pattern rules; all detected values are marked uncertain and require review. No bill image is sent to a cloud OCR API.
+OCR uses PaddleOCR 3.7.0 with PaddlePaddle 3.2.2 in a local Python worker and the default PP-OCRv6_medium multilingual pipeline. PDF pages are rendered locally with PDF.js and `@napi-rs/canvas` before recognition. Common receipt fields are estimated with text-pattern rules; all detected values are marked uncertain and require review. Install Python OCR dependencies from `backend/src/ocr/requirements.txt`; the model is downloaded and cached locally the first time OCR runs. No bill image is sent to a cloud OCR API.
 
 Local authentication displays the fixed development OTP in the application response; no email or WhatsApp message is sent. This behavior is for local development only. Configure real email and WhatsApp Business delivery providers, sender identities, and approved templates before production deployment.
