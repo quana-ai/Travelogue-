@@ -12,7 +12,6 @@ const FIELDS: [string, string][] = [
   ['no', 'Invoice / bill number'],
   ['total', 'Total amount'],
   ['tax', 'Tax amount'],
-  ['items', 'Items (one per line)'],
   ['cur', 'Currency'],
   ['pay', 'Payment details'],
 ];
@@ -32,7 +31,6 @@ const normalizeBill = (bill: any) => ({
   no: bill.billNo || '',
   total: bill.total || '',
   tax: bill.tax || '',
-  items: bill.items || '',
   cur: bill.currency || 'INR',
   pay: bill.payment || '',
   date: bill.date || '',
@@ -56,7 +54,6 @@ const normalizeExtraction = (extraction: any) => ({
   no: extraction?.billNo,
   total: extraction?.total,
   tax: extraction?.tax,
-  items: extraction?.items,
   cur: extraction?.currency,
   pay: extraction?.payment,
 });
@@ -687,7 +684,6 @@ export default function Home() {
         tax: extFields.tax?.v || '',
         currency: extFields.cur?.v || 'INR',
         payment: extFields.pay?.v || '',
-        items: extFields.items?.v || '',
         viewId,
         category: extCat,
         subcategory: extSub,
@@ -1395,11 +1391,8 @@ export default function Home() {
                           <div key={k} className="fld">
                             <label htmlFor={`e_${k}`}>{l}</label>
                             <span className={`pill ${badge.cls}`}>{badge.txt}</span>
-                            {k === 'items'
-                              ? <textarea id={`e_${k}`} rows={4} value={x.v} placeholder="Not found on bill"
-                                  onChange={e => editField(k, e.target.value)} />
-                              : <input type="text" id={`e_${k}`} value={x.v} placeholder="Not found on bill"
-                                  onChange={e => editField(k, e.target.value)} />}
+                            <input type="text" id={`e_${k}`} value={x.v} placeholder="Not found on bill"
+                              onChange={e => editField(k, e.target.value)} />
                           </div>
                         );
                       })}
@@ -1805,7 +1798,6 @@ export default function Home() {
             <dt>Bill number</dt><dd>{modalBill.no || 'Not available'}</dd>
             <dt>Total</dt><dd>{money(modalBill.total, modalBill.cur)}</dd>
             <dt>Tax</dt><dd>{money(modalBill.tax, modalBill.cur)}</dd>
-            <dt>Items</dt><dd style={{ whiteSpace: 'pre-line' }}>{modalBill.items || 'Not available'}</dd>
             <dt>Payment</dt><dd>{modalBill.pay || 'Not available'}</dd>
             <dt>View</dt><dd>{modalBill.cont}</dd>
             <dt>Category</dt><dd>{modalBill.cat} / {modalBill.sub}</dd>
@@ -1955,7 +1947,6 @@ export default function Home() {
             <dt>Bill number</dt><dd>{sharedViewBill.no || 'Not available'}</dd>
             <dt>Total</dt><dd>{money(sharedViewBill.total, sharedViewBill.cur)}</dd>
             <dt>Tax</dt><dd>{money(sharedViewBill.tax, sharedViewBill.cur)}</dd>
-            <dt>Items</dt><dd style={{ whiteSpace: 'pre-line' }}>{sharedViewBill.items || 'Not available'}</dd>
             <dt>Payment</dt><dd>{sharedViewBill.pay || 'Not available'}</dd>
             <dt>Category</dt><dd>{sharedViewBill.cat} / {sharedViewBill.sub}</dd>
             {sharedViewBill.by && <><dt>Shared by</dt><dd>{sharedViewBill.by}</dd></>}

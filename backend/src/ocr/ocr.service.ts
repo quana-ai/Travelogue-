@@ -1,5 +1,5 @@
-import { BadRequestException, Injectable, OnModuleDestroy } from '@nestjs/common';
-import { createCanvas, loadImage } from '@napi-rs/canvas';
+import { Injectable, OnModuleDestroy } from '@nestjs/common';
+import { createCanvas } from '@napi-rs/canvas';
 import * as path from 'path';
 import Tesseract = require('tesseract.js');
 import type { PDFDocumentProxy } from 'pdfjs-dist';
@@ -12,11 +12,9 @@ export interface ExtractedField {
 export interface OcrResult {
   isReceipt: boolean;
   error?: string;
-  quality: 'readable' | 'blurry' | 'unreadable' | 'incomplete';
   merchant: ExtractedField;
   date: ExtractedField;
   billNo: ExtractedField;
-  items: ExtractedField;
   total: ExtractedField;
   tax: ExtractedField;
   currency: ExtractedField;
@@ -32,39 +30,22 @@ export class OcrService implements OnModuleDestroy {
   private queue: Promise<void> = Promise.resolve();
 
   async processBillImage(buffer: Buffer, mimeType: string): Promise<OcrResult> {
-    let pages: Buffer[];
-    try {
-      if (mimeType === 'application/pdf') {
-        pages = await this.renderPdfPages(buffer);
-      } else {
-        await loadImage(buffer);
-        pages = [buffer];
-      }
-    } catch (error) {
-      console.error('Uploaded bill could not be decoded:', error);
-      throw new BadRequestException('No valid bill detected. Please upload a valid bill or receipt.');
-    }
+    const pages = mimeType === 'application/pdf'
+      ? await this.renderPdfPages(buffer)
+      : [buffer];
 
     const recognition = this.queue.then(async () => {
       const worker = await this.getWorker();
       const texts: string[] = [];
-      const confidences: number[] = [];
       for (const page of pages) {
         const result = await worker.recognize(page);
         texts.push(result.data.text);
-        if (result.data.text.trim()) confidences.push(result.data.confidence);
       }
-      return {
-        text: texts.join('\n'),
-        confidence: confidences.length
-          ? confidences.reduce((sum, confidence) => sum + confidence, 0) / confidences.length
-          : 0,
-      };
+      return texts.join('\n');
     });
     this.queue = recognition.then(() => undefined, () => undefined);
 
-    const result = await recognition;
-    return this.validateRecognizedText(result.text, result.confidence);
+    return this.parseReceiptText(await recognition);
   }
 
   async onModuleDestroy() {
@@ -126,10 +107,10 @@ export class OcrService implements OnModuleDestroy {
     }
   }
 
-  validateRecognizedText(text: string, recognitionConfidence: number): OcrResult {
+  private parseReceiptText(text: string): OcrResult {
     const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
     const readableLines = lines.filter((line) => !/^(tax invoice|invoice|receipt|bill|thank you)\b/i.test(line));
-    const merchant = readableLines.find((line) => !this.isTransactionLine(line)) || '';
+    const merchant = readableLines[0] || '';
     const dateLine = lines.find((line) => /\b(?:date|dated|invoice date)\b/i.test(line) || this.parseDate(line));
     const billNumberLine = lines.find((line) => /\b(?:invoice|bill|receipt)\s*(?:no\.?|number|#|:)\b/i.test(line));
     const totalLine = [...lines].reverse().find((line) =>
@@ -137,21 +118,18 @@ export class OcrService implements OnModuleDestroy {
       && !/\b(?:sub\s*total|taxable)\b/i.test(line)
       && this.parseAmount(line) !== '',
     );
-    const taxLine = lines.find((line) => !/\bGSTIN\b/i.test(line)
-      && /\b(?:tax|gst|vat|cgst|sgst|igst)\b/i.test(line)
-      && this.parseAmount(line) !== '');
+    const taxLine = lines.find((line) => /\b(?:tax|gst|vat|cgst|sgst|igst)\b/i.test(line) && this.parseAmount(line) !== '');
     const paymentLine = lines.find((line) => /\b(?:cash|credit card|debit card|visa|mastercard|upi|payment|paid by)\b/i.test(line));
 
     const date = dateLine ? this.parseDate(dateLine) : '';
     const billNoMatch = billNumberLine?.match(/(?:no\.?|number|#|:)\s*([A-Z0-9][A-Z0-9./_-]{2,})/i);
-    const hasReceiptHeading = /\b(?:receipt|tax invoice|invoice|bill|GSTIN|GST\s*IN|invoice\s*no)\b/i.test(text);
-    const hasAmount = Boolean(totalLine);
-    const itemLines = this.extractItems(lines);
-    const hasReceiptDetails = Boolean(date || billNoMatch || taxLine || paymentLine || itemLines.length >= 2);
-    const isReadable = lines.length > 0 && recognitionConfidence >= 20;
-    const isReceipt = isReadable && Boolean(
-      merchant && hasAmount && hasReceiptDetails && (hasReceiptHeading || date || billNoMatch || taxLine || paymentLine),
+    const hasReceiptHeading = /\b(?:receipt|tax invoice|invoice|bill)\b/i.test(text);
+    const hasTransactionDetails = Boolean(
+      totalLine || billNoMatch || date || (taxLine && this.parseAmount(taxLine)) || paymentLine,
     );
+    const isReceipt = hasReceiptHeading
+      ? hasTransactionDetails
+      : Boolean(totalLine && (date || billNoMatch || taxLine || paymentLine));
     const currency = /\b(?:INR|Rs\.?)\b|₹/i.test(text)
       ? 'INR'
       : /\bUSD\b|\$/i.test(text)
@@ -161,21 +139,14 @@ export class OcrService implements OnModuleDestroy {
           : '';
 
     if (!isReceipt) {
-      const quality = !lines.length ? 'unreadable'
-        : recognitionConfidence < 20 ? 'blurry'
-          : hasReceiptHeading || hasReceiptDetails ? 'incomplete' : 'readable';
       return {
         isReceipt: false,
-        quality,
-        error: quality === 'blurry'
-          ? 'This bill is too blurry to read. Please upload a clearer image.'
-          : quality === 'incomplete'
-            ? 'This bill looks incomplete or unreadable. Please upload a clear, full image of the bill or receipt.'
-            : 'No valid bill detected. Please upload a valid bill or receipt.',
+        error: lines.length
+          ? 'This file does not look like a bill or receipt, so no expense details were extracted. Upload a clear image or PDF of a bill, invoice, or receipt. If it is hard to read, try a sharper, well-lit scan.'
+          : 'No readable text was found. Upload a clear, well-lit image or PDF of the bill, invoice, or receipt.',
         merchant: this.field(''),
         date: this.field(''),
         billNo: this.field(''),
-        items: this.field(''),
         total: this.field(''),
         tax: this.field(''),
         currency: this.field(''),
@@ -185,36 +156,14 @@ export class OcrService implements OnModuleDestroy {
 
     return {
       isReceipt: true,
-      quality: 'readable',
       merchant: this.field(merchant),
       date: this.field(date),
       billNo: this.field(billNoMatch?.[1] || ''),
-      items: this.field(itemLines.join('\n')),
       total: this.field(totalLine ? this.parseAmount(totalLine) : ''),
       tax: this.field(taxLine ? this.parseAmount(taxLine) : ''),
       currency: this.field(currency),
       payment: this.field(paymentLine || ''),
     };
-  }
-
-  private isTransactionLine(line: string): boolean {
-    return /\b(?:date|dated|invoice|bill|receipt|total|amount|tax|gst|vat|cgst|sgst|igst|cash|card|upi|payment|paid|subtotal|sub\s*total|discount|change|balance)\b/i.test(line)
-      || this.parseDate(line) !== '';
-  }
-
-  private extractItems(lines: string[]): string[] {
-    const excludedLine = /\b(?:grand\s+total|total\s+amount|amount\s+(?:due|paid)|balance\s+due|net\s+payable|sub\s*total|subtotal|taxable|tax|gst|vat|cgst|sgst|igst|invoice|bill\s*(?:no|number)|receipt|date|discount|payment|paid|cash|card|upi)\b/i;
-    const items: string[] = [];
-    for (const line of lines) {
-      if (excludedLine.test(line)) continue;
-      const amountMatches = [...line.matchAll(/(?:₹|INR|Rs\.?|USD|\$|EUR|€|GBP|£)?\s*([0-9][0-9,]*(?:\.\d{1,2})?)(?![0-9])/gi)];
-      const lastAmount = amountMatches[amountMatches.length - 1];
-      if (!lastAmount || !lastAmount[1]) continue;
-      const label = line.slice(0, lastAmount.index).replace(/[|:—-]\s*$/, '').trim();
-      if (!label || !/[A-Za-z]/.test(label)) continue;
-      items.push(`${label} — ${lastAmount[1].replace(/,/g, '')}`);
-    }
-    return items;
   }
 
   private field(value: string): ExtractedField {
@@ -225,10 +174,7 @@ export class OcrService implements OnModuleDestroy {
   }
 
   private parseAmount(text: string): string {
-    const matches = [...text.matchAll(/(?:₹|INR|Rs\.?|USD|\$|EUR|€|GBP|£)?\s*([0-9][0-9,]*(?:\.\d{1,2})?)/gi)];
-    const match = matches.reverse().find((candidate) =>
-      !/^\s*%/.test(text.slice((candidate.index || 0) + candidate[0].length)),
-    );
+    const match = text.match(/(?:₹|INR|Rs\.?|USD|\$|EUR|€|GBP|£)?\s*([0-9][0-9,]*(?:\.\d{1,2})?)/i);
     return match?.[1].replace(/,/g, '') || '';
   }
 

@@ -65,7 +65,6 @@ model Bill {
   encryptedTotal    String?
   encryptedTax      String?
   encryptedPayment  String?
-  encryptedItems    String?
 
   // Plain metadata for fast indexing & filtering
   date           String?   // Format: YYYY-MM-DD

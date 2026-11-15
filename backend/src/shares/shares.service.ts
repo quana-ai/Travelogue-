@@ -163,7 +163,6 @@ export class SharesService {
       tax: this.cryptoService.decryptField(bill.encryptedTax),
       currency: bill.currency,
       payment: this.cryptoService.decryptField(bill.encryptedPayment),
-      items: this.cryptoService.decryptField(bill.encryptedItems),
       date: bill.date,
       status: bill.status,
       category: bill.category,

@@ -29,10 +29,6 @@ export class ConfirmBillDto {
 
   @IsOptional()
   @IsString()
-  items?: string;
-
-  @IsOptional()
-  @IsString()
   viewId?: string;
 
   @IsOptional()
@@ -47,3 +43,4 @@ export class ConfirmBillDto {
   @IsBoolean()
   isPersonal?: boolean;
 }
+
