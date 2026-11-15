@@ -43,4 +43,3 @@ export class ConfirmBillDto {
   @IsBoolean()
   isPersonal?: boolean;
 }
-
