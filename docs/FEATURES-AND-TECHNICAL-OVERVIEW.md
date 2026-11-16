@@ -16,7 +16,7 @@ This guide describes the application currently present in this repository. The p
 | Dashboard and navigation | Provides the signed-in starting point and navigation among capture, bills, views, categories, and sharing workflows. | Implemented in the existing responsive frontend. |
 | Bill capture | Provides the bill capture/upload workflow, including image selection and browser camera support where available. | Scan opens a camera-first screen with a live preview when browser permissions/device support allow it; a device-camera picker and file-upload fallback remain available. |
 | Bill upload | Accepts image files and PDFs up to 10 MB and records the MIME type. | Functional; uploads are encrypted before being written to local disk. |
-| OCR processing workflow | Moves a new bill through processing, extraction, review, and confirmation states. The UI polls the API for the extraction result. | Uses local Tesseract.js text recognition for uploaded images and PDF pages. It does not call an external OCR API. |
+| OCR processing workflow | Validates uploaded bills before storage, then extracts fields for review and confirmation. | Uses local PaddleOCR text detection and recognition for images and rendered PDF pages. It does not call an external OCR API. |
 | OCR review and correction | Estimates merchant, date, invoice number, total, tax, currency, and payment details from recognized text. The user can correct values before saving. | Best-effort rule-based parsing. Detected values are marked uncertain and require human review; no accuracy benchmark is available. |
 | Bill list and search | Lists saved bills and supports merchant/invoice search plus view, category, and date filters. | Functional. Search over merchant and invoice number is performed after decrypting the user’s bill records. |
 | Bill details and file retrieval | Shows saved bill details and retrieves the original encrypted image or PDF through an authenticated API request. | Functional for the owner and applicable incoming shares; file errors are displayed instead of substituting a generated receipt image. |
@@ -31,24 +31,22 @@ The header uses the app mark without the redundant “Expense Manager” text. T
 
 ## What OCR means in this build
 
-**OCR is processed locally using open-source components, not a hosted API.** The backend uses Tesseract.js with the English model from `@tesseract.js-data/eng`. For PDFs, PDF.js renders up to 10 pages with `@napi-rs/canvas`, then Tesseract.js recognizes the rendered images. The 10-page limit protects the synchronous local processing path; larger PDFs fail with a reviewable extraction error rather than returning fabricated data.
+**OCR is processed locally using open-source components, not a hosted API.** The backend uses PaddleOCR PP-OCRv5 with an English recognition model and text detector. For PDFs, PDF.js renders up to 10 pages with `@napi-rs/canvas`. The 10-page limit protects the local processing path.
 
 The local OCR implementation:
 
 1. The frontend submits the file to the authenticated bill upload endpoint.
-2. The backend validates the file, encrypts and stores it, and creates a bill with `PROCESSING` status.
-3. The backend OCR service recognizes image text locally; PDF pages are rendered locally first. Processing runs in the API process, not in a separate durable job queue.
-4. Rule-based text matching estimates common fields. A conservative heuristic checks for receipt/invoice wording and transaction details such as a total, date, tax, payment, or bill number. If the file does not look like a bill, it returns no candidate fields and marks the upload `INVALID_DOCUMENT`; it cannot be confirmed as an expense. This is a text-pattern check, not a trained document classifier, so it can still miss unusual or non-English receipts.
-5. For likely receipts, non-empty candidates are marked `uncertain`; absent values are `missing`. The frontend polls the extraction endpoint and lets the user review and edit values. Categories are selected by the user; this build does not use OCR to classify expense categories.
+2. The backend runs PaddleOCR text detection locally. Images/pages without a sufficiently distributed text layout are rejected before text recognition.
+3. Only document-like candidates proceed to PaddleOCR text recognition. A text-pattern check then requires receipt details such as a total plus bill-specific signals. This is a heuristic, not a trained bill classifier; text-heavy screenshots may undergo recognition before being rejected.
+4. The backend extracts common fields, then encrypts and stores the accepted upload and creates a bill record with `READY_FOR_REVIEW` status. Invalid uploads are rejected before file storage or bill record creation.
+5. Non-empty candidates are marked `uncertain`; absent values are `missing`. The existing frontend review flow lets users edit values. Categories are selected by the user; this build does not use OCR to classify expense categories.
 6. Confirmation persists the approved values and marks the bill `VERIFIED` when merchant, total, and date are present; otherwise it is marked `NEEDS_REVIEW`.
 
-This is a local OCR baseline, not a claim of production-grade extraction accuracy. It currently recognizes English only; date/amount parsing uses heuristics and must be evaluated on representative receipts. OCR workers run sequentially in the API process, which is not yet a horizontally scalable job-processing design. No receipt image is sent to an OCR vendor.
+This is a local OCR baseline, not a claim of production-grade extraction accuracy. It currently recognizes English only; date/amount parsing uses heuristics and must be evaluated on representative receipts. OCR runs sequentially in the API process and depends on a local Python/PaddleOCR installation and downloaded model files. No receipt image is sent to an OCR vendor.
 
-### Why Tesseract.js for this MVP?
+### Why PaddleOCR for this MVP?
 
-Tesseract.js provides the existing Node.js service with a local, open-source OCR engine and a bundled English model. That matches this MVP's goals of avoiding cloud credentials, per-page service charges, and transmission of bill images to an OCR provider. Using the JavaScript wrapper also avoids requiring a separately installed Tesseract command-line binary on each development machine.
-
-This was a practical privacy/deployment choice, not a benchmark showing Tesseract is more accurate than alternatives. Hosted services such as Google Cloud Vision, AWS Textract, or Azure AI Document Intelligence could provide managed OCR and, depending on the service, document-specific field extraction, but require vendor accounts, network access, and sending documents to that provider under its terms and pricing. Other self-hosted engines are possible, but would add runtime/model and deployment work. The current heuristic parser is intentionally a baseline; compare accuracy, supported languages, privacy requirements, operating cost, and operational effort on consented sample receipts before changing engines.
+PaddleOCR is an open-source, Apache 2.0 local OCR toolkit with separate text-detection and recognition stages. The text detector can screen images for document-like text layout before recognition, and PP-OCRv5 provides an English recognition model without a hosted OCR API or per-page fees. This is a compatibility and local-processing choice, not a claim of measured superiority; accuracy must be benchmarked on representative receipts.
 
 ## Application architecture
 
@@ -128,7 +126,7 @@ All routes are under `/api`. Except for OTP send/verify, endpoints require a val
 | Validation | `class-validator`, `class-transformer`, NestJS validation pipe |
 | Encryption and hashing | Node.js built-in `crypto`; AES-256-GCM, HMAC-SHA-256 for OTP hashes, SHA-256 for file integrity |
 | File upload | NestJS `FileInterceptor` / Multer integration |
-| OCR | Tesseract.js 7 + bundled English model; PDF.js 6 and `@napi-rs/canvas` for PDF page rendering |
+| OCR | PaddleOCR 3.7 / PaddlePaddle 3.2.2, PP-OCRv5 detector and English recognizer; PDF.js 6 and `@napi-rs/canvas` for PDF page rendering |
 | Email/WhatsApp OTP | Not integrated; local mode displays a development code without sending a message |
 
 ## Important limitations and follow-up work

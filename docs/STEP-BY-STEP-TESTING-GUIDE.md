@@ -17,7 +17,7 @@ If GitHub reports **Repository not found**, first check that the URL is exactly 
 
 ## 1. Prerequisites
 
-- Node.js 22.13 or newer and npm installed.
+- Node.js 22.13 or newer, Python 3.9 or newer, and npm installed.
 - Git installed and a terminal opened at the cloned repository root.
 - Dependencies installed in both `frontend/` and `backend/` if this is a fresh checkout.
 - The backend environment configured before starting the API.
@@ -30,6 +30,8 @@ From the repository root:
 
 ```sh
 cd backend
+python3 -m venv .venv-ocr
+.venv-ocr/bin/python -m pip install -r src/ocr/requirements.txt
 npm install
 ```
 
@@ -91,9 +93,16 @@ The OTP is a fixed development code. No email or WhatsApp message is sent. Do no
 10. Verify the bill appears in the bill list with an appropriate status.
 11. Open the bill file and confirm the uploaded image/PDF can be retrieved.
 
-**OCR test expectation:** the backend runs Tesseract.js locally using a bundled English model. It recognizes image content and renders PDF pages locally (up to 10 pages) before recognition. Text patterns estimate common receipt fields; values are marked uncertain and require manual correction. Test with clear, non-sensitive receipt images and PDFs. OCR accuracy has not been benchmarked, and multilingual receipts or unusual layouts may produce missing or incorrect fields.
+**OCR test expectation:** the backend runs PaddleOCR PP-OCRv5 locally. A text-region detector screens each image/PDF page before text recognition; only pages with a document-like layout proceed to recognition. Receipt-specific text checks run before the file is stored or a bill record is created. It renders PDF pages locally (up to 10 pages). Text patterns estimate common receipt fields; values are marked uncertain and require manual correction. The first run downloads the models into `backend/.paddlex/`. Test with clear, non-sensitive receipt images and PDFs. OCR accuracy has not been benchmarked, and multilingual receipts or unusual layouts may produce missing or incorrect fields.
 
-**Non-bill test:** upload a non-receipt image (for example, a landscape photo). The app should show a clear “does not look like a bill or receipt” message with guidance to upload a sharp, well-lit bill, invoice, or receipt. It should not fill the form with unrelated text or a default category, and it must not allow the upload to be confirmed as an expense. The bill list should label the upload “Not a bill” and show no amount.
+**Non-bill test:** upload a personal photo and an unrelated screenshot. The app should show “No valid bill detected. Please upload a valid bill or receipt.” The invalid upload must not be stored or appear in the bill list. Blurry or incomplete bills should show a request to upload a clearer or complete image and must also remain unstored.
+
+Run the focused automated checks from `backend/`:
+
+```sh
+npm test
+.venv-ocr/bin/python -m unittest src/ocr/test_paddle_worker.py
+```
 
 ## 6. Test bill listing and organization
 

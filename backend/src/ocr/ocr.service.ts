@@ -1,7 +1,13 @@
-import { BadRequestException, Injectable, OnModuleDestroy } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  OnModuleDestroy,
+  ServiceUnavailableException,
+} from '@nestjs/common';
+import { ChildProcessWithoutNullStreams, spawn } from 'child_process';
 import { createCanvas, loadImage } from '@napi-rs/canvas';
+import * as fs from 'fs';
 import * as path from 'path';
-import Tesseract = require('tesseract.js');
 import type { PDFDocumentProxy } from 'pdfjs-dist';
 
 export interface ExtractedField {
@@ -25,10 +31,24 @@ export interface OcrResult {
 
 type PdfJs = typeof import('pdfjs-dist');
 
+interface WorkerResponse {
+  candidate?: boolean;
+  confidence?: number;
+  error?: string;
+  quality?: 'blurry' | 'readable' | 'unreadable';
+  text?: string;
+}
+
 @Injectable()
 export class OcrService implements OnModuleDestroy {
   private readonly maxPdfPages = 10;
-  private workerPromise: Promise<Tesseract.Worker> | null = null;
+  private workerProcess: ChildProcessWithoutNullStreams | null = null;
+  private stdoutBuffer = '';
+  private pendingResponse: {
+    resolve: (response: WorkerResponse) => void;
+    reject: (error: Error) => void;
+    timeout: NodeJS.Timeout;
+  } | null = null;
   private queue: Promise<void> = Promise.resolve();
 
   async processBillImage(buffer: Buffer, mimeType: string): Promise<OcrResult> {
@@ -46,49 +66,161 @@ export class OcrService implements OnModuleDestroy {
     }
 
     const recognition = this.queue.then(async () => {
-      const worker = await this.getWorker();
-      const texts: string[] = [];
-      const confidences: number[] = [];
+      const candidates: Buffer[] = [];
+      const detections: WorkerResponse[] = [];
       for (const page of pages) {
-        const result = await worker.recognize(page);
-        texts.push(result.data.text);
-        if (result.data.text.trim()) confidences.push(result.data.confidence);
+        const detection = await this.detectDocumentCandidate(page);
+        detections.push(detection);
+        if (detection.candidate) candidates.push(page);
       }
-      return {
-        text: texts.join('\n'),
-        confidence: confidences.length
-          ? confidences.reduce((sum, confidence) => sum + confidence, 0) / confidences.length
-          : 0,
-      };
+
+      if (!candidates.length) {
+        if (detections.some((detection) => detection.quality === 'blurry')) {
+          return this.invalidResult('blurry', 'This bill is too blurry to read. Please upload a clearer image.');
+        }
+        return this.invalidResult('unreadable', 'No valid bill detected. Please upload a valid bill or receipt.');
+      }
+
+      const texts: string[] = [];
+      let totalConfidence = 0;
+      let recognizedPages = 0;
+      for (const page of candidates) {
+        const result = await this.runWorker('recognize', page);
+        texts.push(result.text || '');
+        if (result.text?.trim()) {
+          totalConfidence += result.confidence || 0;
+          recognizedPages += 1;
+        }
+      }
+      return this.validateRecognizedText(
+        texts.join('\n'),
+        recognizedPages ? totalConfidence / recognizedPages : 0,
+      );
     });
     this.queue = recognition.then(() => undefined, () => undefined);
 
-    const result = await recognition;
-    return this.validateRecognizedText(result.text, result.confidence);
+    try {
+      return await recognition;
+    } catch (error) {
+      console.error('PaddleOCR validation failed:', error);
+      throw new ServiceUnavailableException(
+        'Local bill recognition is unavailable. Please check the PaddleOCR setup and try again.',
+      );
+    }
   }
 
   async onModuleDestroy() {
-    const worker = await this.workerPromise?.catch(() => null);
-    if (worker) await worker.terminate();
+    if (this.pendingResponse) {
+      clearTimeout(this.pendingResponse.timeout);
+      this.pendingResponse.reject(new Error('PaddleOCR worker stopped.'));
+      this.pendingResponse = null;
+    }
+    this.workerProcess?.kill();
+    this.workerProcess = null;
   }
 
-  private async getWorker(): Promise<Tesseract.Worker> {
-    if (!this.workerPromise) {
-      const languageDataPath = process.env.TESSDATA_PATH
-        || path.join(path.dirname(require.resolve('@tesseract.js-data/eng')), '4.0.0');
-      this.workerPromise = Tesseract.createWorker('eng', Tesseract.OEM.LSTM_ONLY, {
-        langPath: languageDataPath,
-        cachePath: process.env.TESSERACT_CACHE_PATH || path.join(process.cwd(), '.tesseract-cache'),
-        gzip: true,
+  private detectDocumentCandidate(buffer: Buffer): Promise<WorkerResponse> {
+    return this.runWorker('detect', buffer);
+  }
+
+  private runWorker(mode: 'detect' | 'recognize', buffer: Buffer): Promise<WorkerResponse> {
+    const worker = this.getWorkerProcess();
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.pendingResponse = null;
+        if (this.workerProcess === worker) this.workerProcess = null;
+        worker.kill();
+        reject(new Error('PaddleOCR worker timed out.'));
+      }, 5 * 60 * 1000);
+      this.pendingResponse = { resolve, reject, timeout };
+
+      worker.stdin.write(JSON.stringify({
+        mode,
+        image: buffer.toString('base64'),
+      }) + '\n', (error) => {
+        if (!error) return;
+        clearTimeout(timeout);
+        this.pendingResponse = null;
+        reject(error);
       });
+    });
+  }
+
+  private getWorkerProcess(): ChildProcessWithoutNullStreams {
+    if (this.workerProcess && this.workerProcess.exitCode === null && !this.workerProcess.killed) {
+      return this.workerProcess;
     }
 
-    try {
-      return await this.workerPromise;
-    } catch (error) {
-      this.workerPromise = null;
-      throw error;
+    const virtualEnvPython = path.join(
+      process.cwd(),
+      '.venv-ocr',
+      process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python',
+    );
+    const python = process.env.PADDLE_OCR_PYTHON
+      || (fs.existsSync(virtualEnvPython) ? virtualEnvPython : process.platform === 'win32' ? 'python' : 'python3');
+    const worker = spawn(python, [path.join(__dirname, 'paddle_worker.py')], {
+      stdio: 'pipe',
+      env: {
+        ...process.env,
+        PADDLE_PDX_CACHE_HOME: process.env.PADDLE_PDX_CACHE_HOME || path.join(process.cwd(), '.paddlex'),
+      },
+    });
+    this.workerProcess = worker;
+    this.stdoutBuffer = '';
+
+    worker.stdout.on('data', (chunk: Buffer) => {
+      this.stdoutBuffer += chunk.toString('utf8');
+      const lines = this.stdoutBuffer.split(/\r?\n/);
+      this.stdoutBuffer = lines.pop() || '';
+      for (const line of lines) this.handleWorkerResponse(line);
+    });
+    worker.stderr.on('data', (chunk: Buffer) => {
+      const message = chunk.toString('utf8').trim();
+      if (message) console.error('[PaddleOCR worker]', message);
+    });
+    worker.on('error', (error) => this.failWorker(error));
+    worker.on('exit', (code, signal) => {
+      if (this.workerProcess === worker) this.workerProcess = null;
+      if (this.pendingResponse) {
+        this.failWorker(new Error(`PaddleOCR worker exited (code ${code}, signal ${signal}).`));
+      }
+    });
+
+    return worker;
+  }
+
+  private handleWorkerResponse(line: string) {
+    const pending = this.pendingResponse;
+    if (!pending) {
+      if (line.trim()) console.error('[PaddleOCR worker] Unexpected output:', line);
+      return;
     }
+
+    let response: WorkerResponse;
+    try {
+      response = JSON.parse(line) as WorkerResponse;
+    } catch (error) {
+      console.error('[PaddleOCR worker] Invalid response:', error);
+      this.failWorker(new Error('PaddleOCR worker returned an invalid response.'));
+      return;
+    }
+
+    clearTimeout(pending.timeout);
+    this.pendingResponse = null;
+    if (response.error) {
+      console.error('[PaddleOCR worker] Recognition error:', response.error);
+      pending.reject(new Error('PaddleOCR could not process this document.'));
+    } else {
+      pending.resolve(response);
+    }
+  }
+
+  private failWorker(error: Error) {
+    const pending = this.pendingResponse;
+    if (!pending) return;
+    clearTimeout(pending.timeout);
+    this.pendingResponse = null;
+    pending.reject(error);
   }
 
   private async renderPdfPages(buffer: Buffer): Promise<Buffer[]> {
@@ -126,6 +258,25 @@ export class OcrService implements OnModuleDestroy {
     }
   }
 
+  private invalidResult(
+    quality: OcrResult['quality'],
+    error: string,
+  ): OcrResult {
+    return {
+      isReceipt: false,
+      quality,
+      error,
+      merchant: this.field(''),
+      date: this.field(''),
+      billNo: this.field(''),
+      items: this.field(''),
+      total: this.field(''),
+      tax: this.field(''),
+      currency: this.field(''),
+      payment: this.field(''),
+    };
+  }
+
   validateRecognizedText(text: string, recognitionConfidence: number): OcrResult {
     const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
     const readableLines = lines.filter((line) => !/^(tax invoice|invoice|receipt|bill|thank you)\b/i.test(line));
@@ -148,7 +299,7 @@ export class OcrService implements OnModuleDestroy {
     const hasAmount = Boolean(totalLine);
     const itemLines = this.extractItems(lines);
     const hasReceiptDetails = Boolean(date || billNoMatch || taxLine || paymentLine || itemLines.length >= 2);
-    const isReadable = lines.length > 0 && recognitionConfidence >= 20;
+    const isReadable = lines.length > 0 && recognitionConfidence >= 40;
     const isReceipt = isReadable && Boolean(
       merchant && hasAmount && hasReceiptDetails && (hasReceiptHeading || date || billNoMatch || taxLine || paymentLine),
     );
@@ -162,25 +313,16 @@ export class OcrService implements OnModuleDestroy {
 
     if (!isReceipt) {
       const quality = !lines.length ? 'unreadable'
-        : recognitionConfidence < 20 ? 'blurry'
+        : recognitionConfidence < 40 ? 'blurry'
           : hasReceiptHeading || hasReceiptDetails ? 'incomplete' : 'readable';
-      return {
-        isReceipt: false,
-        quality,
-        error: quality === 'blurry'
+      const error = quality === 'blurry'
           ? 'This bill is too blurry to read. Please upload a clearer image.'
+          : quality === 'unreadable'
+            ? 'This bill could not be read. Please upload a clear, well-lit image.'
           : quality === 'incomplete'
             ? 'This bill looks incomplete or unreadable. Please upload a clear, full image of the bill or receipt.'
-            : 'No valid bill detected. Please upload a valid bill or receipt.',
-        merchant: this.field(''),
-        date: this.field(''),
-        billNo: this.field(''),
-        items: this.field(''),
-        total: this.field(''),
-        tax: this.field(''),
-        currency: this.field(''),
-        payment: this.field(''),
-      };
+            : 'No valid bill detected. Please upload a valid bill or receipt.';
+      return this.invalidResult(quality, error);
     }
 
     return {
