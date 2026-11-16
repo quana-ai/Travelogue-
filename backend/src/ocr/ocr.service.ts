@@ -1,8 +1,13 @@
-import { BadRequestException, Injectable, OnModuleDestroy } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { createCanvas, loadImage } from '@napi-rs/canvas';
 import * as path from 'path';
-import Tesseract = require('tesseract.js');
+import * as fs from 'fs';
+import * as os from 'os';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
+
+const execFileAsync = promisify(execFile);
 
 export interface ExtractedField {
   value: string;
@@ -25,10 +30,18 @@ export interface OcrResult {
 
 type PdfJs = typeof import('pdfjs-dist');
 
+interface OcrBridgeResult {
+  text: string;
+  confidence: number;
+  engine: string;
+  error?: string;
+}
+
 @Injectable()
-export class OcrService implements OnModuleDestroy {
+export class OcrService {
+  private readonly logger = new Logger(OcrService.name);
   private readonly maxPdfPages = 10;
-  private workerPromise: Promise<Tesseract.Worker> | null = null;
+  private readonly scriptPath = path.join(__dirname, '..', '..', 'scripts', 'ocr_bridge.py');
   private queue: Promise<void> = Promise.resolve();
 
   async processBillImage(buffer: Buffer, mimeType: string): Promise<OcrResult> {
@@ -41,23 +54,23 @@ export class OcrService implements OnModuleDestroy {
         pages = [buffer];
       }
     } catch (error) {
-      console.error('Uploaded bill could not be decoded:', error);
+      this.logger.error('Uploaded bill could not be decoded:', error);
       throw new BadRequestException('No valid bill detected. Please upload a valid bill or receipt.');
     }
 
+    // Serialize OCR calls to avoid overloading the Python process
     const recognition = this.queue.then(async () => {
-      const worker = await this.getWorker();
       const texts: string[] = [];
       const confidences: number[] = [];
       for (const page of pages) {
-        const result = await worker.recognize(page);
-        texts.push(result.data.text);
-        if (result.data.text.trim()) confidences.push(result.data.confidence);
+        const result = await this.runPythonOcr(page);
+        texts.push(result.text);
+        if (result.text.trim()) confidences.push(result.confidence);
       }
       return {
         text: texts.join('\n'),
         confidence: confidences.length
-          ? confidences.reduce((sum, confidence) => sum + confidence, 0) / confidences.length
+          ? confidences.reduce((sum, c) => sum + c, 0) / confidences.length
           : 0,
       };
     });
@@ -67,27 +80,40 @@ export class OcrService implements OnModuleDestroy {
     return this.validateRecognizedText(result.text, result.confidence);
   }
 
-  async onModuleDestroy() {
-    const worker = await this.workerPromise?.catch(() => null);
-    if (worker) await worker.terminate();
-  }
-
-  private async getWorker(): Promise<Tesseract.Worker> {
-    if (!this.workerPromise) {
-      const languageDataPath = process.env.TESSDATA_PATH
-        || path.join(path.dirname(require.resolve('@tesseract.js-data/eng')), '4.0.0');
-      this.workerPromise = Tesseract.createWorker('eng', Tesseract.OEM.LSTM_ONLY, {
-        langPath: languageDataPath,
-        cachePath: process.env.TESSERACT_CACHE_PATH || path.join(process.cwd(), '.tesseract-cache'),
-        gzip: true,
-      });
-    }
+  /**
+   * Call the Python OCR bridge script with an image buffer.
+   * Writes to a temp file, invokes the script, and parses JSON output.
+   */
+  private async runPythonOcr(imageBuffer: Buffer): Promise<OcrBridgeResult> {
+    const tmpDir = os.tmpdir();
+    const tmpFile = path.join(tmpDir, `travelogue-ocr-${Date.now()}-${Math.random().toString(36).slice(2)}.png`);
 
     try {
-      return await this.workerPromise;
-    } catch (error) {
-      this.workerPromise = null;
-      throw error;
+      fs.writeFileSync(tmpFile, imageBuffer);
+
+      const python = process.env.PYTHON_PATH || 'python3';
+      const { stdout, stderr } = await execFileAsync(python, [this.scriptPath, tmpFile], {
+        timeout: 120_000,  // 2 minute timeout for first-run model downloads
+        maxBuffer: 10 * 1024 * 1024,
+        env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' },
+      });
+
+      if (stderr) {
+        this.logger.warn('Python OCR stderr:', stderr.slice(0, 500));
+      }
+
+      const result: OcrBridgeResult = JSON.parse(stdout.trim());
+      if (result.error) {
+        this.logger.error('Python OCR engine error:', result.error);
+      }
+      this.logger.log(`OCR completed via ${result.engine}, confidence: ${result.confidence}%`);
+      return result;
+    } catch (error: any) {
+      this.logger.error('Python OCR bridge failed:', error.message);
+      // Return empty result — the validation logic will handle it
+      return { text: '', confidence: 0, engine: 'none', error: error.message };
+    } finally {
+      try { fs.unlinkSync(tmpFile); } catch { /* ignore */ }
     }
   }
 
@@ -233,10 +259,10 @@ export class OcrService implements OnModuleDestroy {
   }
 
   private parseDate(text: string): string {
-    const iso = text.match(/\b(20\d{2})[-/.](\d{1,2})[-/.](\d{1,2})\b/);
+    const iso = text.match(/\b(20\d{2})[-.\/](\d{1,2})[-.\/](\d{1,2})\b/);
     if (iso) return `${iso[1]}-${iso[2].padStart(2, '0')}-${iso[3].padStart(2, '0')}`;
 
-    const dayFirst = text.match(/\b(\d{1,2})[-/.](\d{1,2})[-/.](20\d{2})\b/);
+    const dayFirst = text.match(/\b(\d{1,2})[-.\/](\d{1,2})[-.\/](20\d{2})\b/);
     if (dayFirst) return `${dayFirst[3]}-${dayFirst[2].padStart(2, '0')}-${dayFirst[1].padStart(2, '0')}`;
 
     const monthName = text.match(/\b(?:\d{1,2}\s+[A-Za-z]{3,9}\s+20\d{2}|[A-Za-z]{3,9}\s+\d{1,2},?\s+20\d{2})\b/);
