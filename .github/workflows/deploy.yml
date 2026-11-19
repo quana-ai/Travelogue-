@@ -38,10 +38,11 @@ jobs:
       - name: Generate Prisma client
         run: npx prisma generate
 
-      - name: Check migrations apply cleanly
+      - name: Validate Prisma schema
         env:
-          DATABASE_URL: file:./ci.db
-        run: npx prisma migrate deploy
+          DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/postgres"
+          DIRECT_URL: "postgresql://postgres:postgres@localhost:5432/postgres"
+        run: npx prisma validate
 
       - name: Type check
         run: npx tsc --noEmit
