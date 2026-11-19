@@ -1,28 +1,38 @@
 services:
   travelogue:
-    image: ghcr.io/quana-ai/travelogue:latest
+    # Pin IMAGE_TAG to a commit SHA in .env to deploy (or roll back to) an exact build.
+    image: ghcr.io/${GHCR_OWNER:-quana-ai}/travelogue:${IMAGE_TAG:-latest}
     container_name: travelogue
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "${HOST_PORT:-3000}:3000"
     environment:
-      - JWT_SECRET=${JWT_SECRET}
-      - JWT_EXPIRES_IN=7d
-      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
-      - FRONTEND_ORIGINS=*
-      - OCR_MIN_CONFIDENCE=35
+      # Required: compose refuses to start if these are missing from .env.
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?Set ENCRYPTION_KEY in .env}
+      OTP_SECRET: ${OTP_SECRET:?Set OTP_SECRET in .env}
+      # Public URL(s) of the site, comma-separated, e.g. https://travelogue.example.com
+      FRONTEND_ORIGINS: ${FRONTEND_ORIGINS:-http://localhost:3000}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-7d}
+      OCR_MIN_CONFIDENCE: ${OCR_MIN_CONFIDENCE:-35}
     volumes:
       - travelogue_db:/app/prisma
-      - travelogue_uploads:/app/uploads
-    networks:
-      - web
+      # The backend writes encrypted bills to <working dir>/uploads = /app/backend/uploads.
+      - travelogue_uploads:/app/backend/uploads
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/auth/me').then(r=>process.exit(r.status<500?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   travelogue_db:
     name: travelogue_db
   travelogue_uploads:
     name: travelogue_uploads
-
-networks:
-  web:
-    external: true
