@@ -13,6 +13,10 @@ services:
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:?Set ENCRYPTION_KEY in .env}
       OTP_SECRET: ${OTP_SECRET:?Set OTP_SECRET in .env}
+      # Private Supabase Storage bucket for encrypted bill files (server-side key only)
+      SUPABASE_URL: ${SUPABASE_URL:?Set SUPABASE_URL in .env}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY:?Set SUPABASE_SERVICE_ROLE_KEY in .env}
+      SUPABASE_BILLS_BUCKET: ${SUPABASE_BILLS_BUCKET:-bills}
       # Public URL(s) of the site, comma-separated, e.g. https://travelogue.example.com
       FRONTEND_ORIGINS: ${FRONTEND_ORIGINS:-http://localhost:3000}
       JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-7d}

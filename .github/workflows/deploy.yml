@@ -92,6 +92,23 @@ jobs:
       - name: Set lowercase repository owner
         run: echo "REPO_OWNER=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
 
+      # Fails if docker-compose.yml is invalid or a required setting is not declared.
+      # Placeholder values only; the real ones live in the VPS .env file.
+      - name: Validate docker-compose config
+        env:
+          DATABASE_URL: postgresql://user:pass@localhost:6543/postgres
+          JWT_SECRET: ci-placeholder
+          ENCRYPTION_KEY: ci-placeholder-32-characters-key
+          OTP_SECRET: ci-placeholder
+          SUPABASE_URL: https://example.supabase.co
+          SUPABASE_SERVICE_ROLE_KEY: ci-placeholder
+        run: |
+          docker network create web >/dev/null 2>&1 || true
+          docker compose -f docker-compose.yml config --quiet
+          for var in DATABASE_URL JWT_SECRET ENCRYPTION_KEY OTP_SECRET SUPABASE_URL SUPABASE_SERVICE_ROLE_KEY SUPABASE_BILLS_BUCKET; do
+            docker compose -f docker-compose.yml config | grep -q "$var:" || { echo "::error::$var is missing from docker-compose.yml"; exit 1; }
+          done
+
       - uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR

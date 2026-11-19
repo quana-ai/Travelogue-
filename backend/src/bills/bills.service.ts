@@ -71,7 +71,7 @@ export class BillsService {
       }
     }
 
-    const stored = await this.storageService.saveEncryptedFile(file);
+    const stored = await this.storageService.saveEncryptedFile(file, userId);
 
     try {
       const isPersonal = dto.isPersonal === 'true';
