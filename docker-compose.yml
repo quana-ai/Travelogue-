@@ -30,9 +30,15 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+    networks:
+      - web
 
 volumes:
   travelogue_db:
     name: travelogue_db
   travelogue_uploads:
     name: travelogue_uploads
+
+networks:
+  web:
+    external: true
