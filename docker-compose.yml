@@ -8,6 +8,8 @@ services:
       - "${HOST_PORT:-3000}:3000"
     environment:
       # Required: compose refuses to start if these are missing from .env.
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env}
+      DIRECT_URL: ${DIRECT_URL:-}
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:?Set ENCRYPTION_KEY in .env}
       OTP_SECRET: ${OTP_SECRET:?Set OTP_SECRET in .env}

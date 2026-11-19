@@ -51,7 +51,6 @@ RUN apt-get update && apt-get install -y \
 
 ENV NODE_ENV=production
 ENV PORT=3000
-ENV DATABASE_URL=file:/app/prisma/prod.db
 ENV UPLOAD_DIR=/app/uploads
 
 # Create directories for uploads, database, and logging
