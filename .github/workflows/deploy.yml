@@ -147,7 +147,7 @@ jobs:
     steps:
       - name: Skip when deploy secrets are not configured
         if: env.VPS_HOST == ''
-        run: echo "::notice::VPS_HOST secret is not set, skipping deploy. Add VPS_HOST, VPS_USER, VPS_SSH_KEY and VPS_APP_DIR to enable it."
+        run: echo "::notice::VPS_HOST secret is not set, skipping deploy. Add VPS_HOST, VPS_USERNAME and VPS_SSH_KEY to enable it."
 
       - uses: actions/checkout@v4
         if: env.VPS_HOST != ''
@@ -158,11 +158,10 @@ jobs:
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER }}
+          username: ${{ secrets.VPS_USERNAME }}
           key: ${{ secrets.VPS_SSH_KEY }}
-          port: ${{ secrets.VPS_PORT || 22 }}
           source: docker-compose.yml
-          target: ${{ secrets.VPS_APP_DIR }}
+          target: /srv/apps/travelogue
 
       # Deploys the exact image built for this commit; roll back by re-running an older workflow run.
       - name: Pull the new image and restart
@@ -170,12 +169,11 @@ jobs:
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER }}
+          username: ${{ secrets.VPS_USERNAME }}
           key: ${{ secrets.VPS_SSH_KEY }}
-          port: ${{ secrets.VPS_PORT || 22 }}
           script: |
             set -e
-            cd "${{ secrets.VPS_APP_DIR }}"
+            cd "/srv/apps/travelogue"
             export IMAGE_TAG=${{ github.sha }}
             docker compose pull travelogue
             docker compose up -d --remove-orphans travelogue
