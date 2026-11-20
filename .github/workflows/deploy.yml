@@ -131,3 +131,68 @@ jobs:
             ghcr.io/${{ env.REPO_OWNER }}/travelogue:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  deploy:
+    name: Deploy to VPS
+    needs: [docker]
+    # Only real pushes to main deploy; pull requests and manual runs on other branches never do.
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    env:
+      VPS_HOST: ${{ secrets.VPS_HOST }}
+      APP_URL: ${{ vars.APP_URL || 'https://travelogue.quana.ai' }}
+    steps:
+      - name: Skip when deploy secrets are not configured
+        if: env.VPS_HOST == ''
+        run: echo "::notice::VPS_HOST secret is not set, skipping deploy. Add VPS_HOST, VPS_USER, VPS_SSH_KEY and VPS_APP_DIR to enable it."
+
+      - uses: actions/checkout@v4
+        if: env.VPS_HOST != ''
+
+      # Keep the server's compose file in step with main (its .env stays on the server).
+      - name: Copy docker-compose.yml to the server
+        if: env.VPS_HOST != ''
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT || 22 }}
+          source: docker-compose.yml
+          target: ${{ secrets.VPS_APP_DIR }}
+
+      # Deploys the exact image built for this commit; roll back by re-running an older workflow run.
+      - name: Pull the new image and restart
+        if: env.VPS_HOST != ''
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT || 22 }}
+          script: |
+            set -e
+            cd "${{ secrets.VPS_APP_DIR }}"
+            export IMAGE_TAG=${{ github.sha }}
+            docker compose pull travelogue
+            docker compose up -d --remove-orphans travelogue
+            for i in $(seq 1 30); do
+              status=$(docker inspect -f '{{.State.Health.Status}}' travelogue 2>/dev/null || echo unknown)
+              [ "$status" = healthy ] && break
+              sleep 5
+            done
+            docker ps --filter name=travelogue --format '{{.Names}} {{.Image}} {{.Status}}'
+            docker logs --tail 15 travelogue
+            [ "$status" = healthy ] || { echo "Container did not become healthy"; exit 1; }
+            docker image prune -f >/dev/null
+
+      - name: Smoke test the live site
+        if: env.VPS_HOST != ''
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' "$APP_URL/")
+          echo "Home page: $code"; [ "$code" = 200 ]
+          code=$(curl -s -o /dev/null -w '%{http_code}' "$APP_URL/api/auth/me")
+          echo "API without login (expect 401): $code"; [ "$code" = 401 ]
