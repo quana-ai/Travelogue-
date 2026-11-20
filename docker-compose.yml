@@ -23,6 +23,8 @@ services:
       SMTP_USER: ${SMTP_USER:-}
       SMTP_PASS: ${SMTP_PASS:-}
       EMAIL_FROM: ${EMAIL_FROM:-}
+      # Demo only: show sign-in codes on screen instead of emailing them (anyone can sign in as any email)
+      OTP_SHOW_ON_SCREEN: ${OTP_SHOW_ON_SCREEN:-false}
       # Public URL(s) of the site, comma-separated, e.g. https://travelogue.example.com
       FRONTEND_ORIGINS: ${FRONTEND_ORIGINS:-http://localhost:3000}
       JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-7d}

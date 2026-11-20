@@ -91,6 +91,8 @@ export class AuthService {
       success: true,
       message: useFixedDevCode
         ? `Local development only: no message was sent. Enter code ${code} for ${contact}.`
+        : this.notifications.showOnScreen
+        ? `Demo mode: your sign-in code is ${code}.`
         : `We sent a 6-digit code to ${contact}. Check your inbox and spam folder.`,
       contact,
     };

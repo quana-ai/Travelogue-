@@ -17,6 +17,8 @@ export class NotificationService {
   private readonly transporter: Transporter | null;
   private readonly from: string;
   readonly devMode: boolean;
+  /** Demo only: return the code in the API response so the sign-in screen shows it. */
+  readonly showOnScreen: boolean;
 
   constructor(private readonly config: ConfigService) {
     const host = this.config.get<string>('SMTP_HOST');
@@ -28,6 +30,11 @@ export class NotificationService {
     // Dev mode is on by default outside production; it can never be on in production.
     this.devMode = process.env.NODE_ENV !== 'production'
       && this.config.get<string>('OTP_DEV_MODE') !== 'false';
+
+    this.showOnScreen = this.config.get<string>('OTP_SHOW_ON_SCREEN') === 'true';
+    if (this.showOnScreen) {
+      this.logger.warn('OTP_SHOW_ON_SCREEN=true: sign-in codes are shown on screen. Anyone can sign in as any email. Demo use only.');
+    }
 
     this.transporter = host
       ? nodemailer.createTransport({
@@ -50,6 +57,9 @@ export class NotificationService {
   }
 
   async sendOtp(contact: string, code: string): Promise<void> {
+    if (this.showOnScreen) {
+      return;
+    }
     if (!contact.includes('@')) {
       throw new ServiceUnavailableException(
         'WhatsApp codes are not available yet. Please sign in with your email address.',
