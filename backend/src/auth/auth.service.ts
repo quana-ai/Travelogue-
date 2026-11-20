@@ -5,12 +5,14 @@ import { SendOtpDto } from './dto/send-otp.dto';
 import { VerifyOtpDto } from './dto/verify-otp.dto';
 import * as crypto from 'crypto';
 import { normalizeContact } from '../common/contact';
+import { NotificationService } from '../notifications/notification.service';
 
 @Injectable()
 export class AuthService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwtService: JwtService,
+    private readonly notifications: NotificationService,
   ) {}
 
   private hashOtp(code: string, salt: string): string {
@@ -41,15 +43,12 @@ export class AuthService {
     if (recentOtps >= 5) {
       throw new BadRequestException('Too many OTP requests. Please wait a few minutes before trying again.');
     }
-    if (process.env.NODE_ENV === 'production') {
-      throw new ServiceUnavailableException('Email and WhatsApp OTP delivery has not been configured.');
-    }
+    // Fixed code only for local development without email; everywhere else a random 6-digit code.
+    const useFixedDevCode = this.notifications.devMode && !this.notifications.emailConfigured;
+    const code = useFixedDevCode
+      ? '123456'
+      : crypto.randomInt(0, 1_000_000).toString().padStart(6, '0');
 
-    // Generate 6-digit code (Use 123456 for easy MVP testing, or random)
-    const code = process.env.NODE_ENV === 'production' 
-      ? crypto.randomInt(100000, 1000000).toString()
-      : '123456';
-    
     const salt = process.env.OTP_SECRET || process.env.JWT_SECRET
       || (process.env.NODE_ENV === 'production' ? '' : 'travelogue_local_otp_secret');
     if (!salt) {
@@ -58,14 +57,20 @@ export class AuthService {
     const codeHash = this.hashOtp(code, salt);
     const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes validity
 
-    // Store in database
-    await this.prisma.otpCode.create({
+    // Store in database, then deliver; remove the code again if delivery fails.
+    const otp = await this.prisma.otpCode.create({
       data: {
         contact,
         codeHash,
         expiresAt,
       },
     });
+    try {
+      await this.notifications.sendOtp(contact, code);
+    } catch (error) {
+      await this.prisma.otpCode.delete({ where: { id: otp.id } }).catch(() => undefined);
+      throw error;
+    }
 
     // Save user draft name if provided
     if (dto.name) {
@@ -84,9 +89,9 @@ export class AuthService {
 
     return {
       success: true,
-      message: process.env.NODE_ENV === 'production'
-        ? `Code sent to ${contact}.`
-        : `Local development only: no message was sent. Enter code ${code} for ${contact}.`,
+      message: useFixedDevCode
+        ? `Local development only: no message was sent. Enter code ${code} for ${contact}.`
+        : `We sent a 6-digit code to ${contact}. Check your inbox and spam folder.`,
       contact,
     };
   }

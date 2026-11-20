@@ -8,11 +8,13 @@ import { OcrModule } from './ocr/ocr.module';
 import { BillsModule } from './bills/bills.module';
 import { ViewsModule } from './views/views.module';
 import { SharesModule } from './shares/shares.module';
+import { NotificationModule } from './notifications/notification.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     PrismaModule,
+    NotificationModule,
     AuthModule,
     CryptoModule,
     StorageModule,
