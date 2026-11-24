@@ -2,6 +2,7 @@ import {
   Controller,
   Post,
   Get,
+  Delete,
   Body,
   Param,
   Query,
@@ -74,6 +75,7 @@ export class BillsController {
     @Query('dateFilter') dateFilter?: string,
     @Query('fromDate') fromDate?: string,
     @Query('toDate') toDate?: string,
+    @Query('deleted') deleted?: string,
   ) {
     return this.billsService.listBills(req.user.id, {
       q,
@@ -82,6 +84,7 @@ export class BillsController {
       dateFilter,
       fromDate,
       toDate,
+      deleted: deleted === 'true',
     });
   }
 
@@ -106,5 +109,17 @@ export class BillsController {
     @Body('viewId') targetViewId: string,
   ) {
     return this.billsService.moveBill(req.user.id, id, targetViewId);
+  }
+
+  @Delete(':id')
+  async deleteBill(@Req() req, @Param('id') id: string, @Query('permanent') permanent?: string) {
+    return permanent === 'true'
+      ? this.billsService.deleteBillPermanently(req.user.id, id)
+      : this.billsService.deleteBill(req.user.id, id);
+  }
+
+  @Post(':id/restore')
+  async restoreBill(@Req() req, @Param('id') id: string) {
+    return this.billsService.restoreBill(req.user.id, id);
   }
 }

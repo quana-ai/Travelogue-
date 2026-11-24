@@ -36,6 +36,7 @@ const normalizeBill = (bill: any) => ({
   cur: bill.currency || 'INR',
   pay: bill.payment || '',
   date: bill.date || '',
+  added: bill.createdAt || '',
   cont: bill.view?.name || 'Unassigned',
   viewId: bill.view?.id || '',
   cat: bill.category || '',
@@ -85,6 +86,16 @@ const AppMark = ({ size = 28 }: { size?: number }) => (
 );
 
 /* ===================== MAIN APP ===================== */
+const QIcon = ({ name }: { name: 'star' | 'clock' | 'share' | 'trash' | 'more' }) => (
+  <svg className="qi" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    {name === 'star' && <path d="M12 3.5l2.6 5.3 5.8.8-4.2 4.1 1 5.8L12 16.8l-5.2 2.7 1-5.8-4.2-4.1 5.8-.8z" />}
+    {name === 'clock' && <><circle cx="12" cy="12" r="8.5" /><path d="M12 7.5V12l3 2" /></>}
+    {name === 'share' && <><circle cx="18" cy="5.5" r="2.5" /><circle cx="6" cy="12" r="2.5" /><circle cx="18" cy="18.5" r="2.5" /><path d="M8.2 10.8l7.6-4.1M8.2 13.2l7.6 4.1" /></>}
+    {name === 'trash' && <><path d="M4 7h16M9.5 7V4.5h5V7M6.5 7l1 12.5h9l1-12.5" /><path d="M10 11v5M14 11v5" /></>}
+    {name === 'more' && <><circle cx="12" cy="5.5" r="1.3" fill="currentColor" /><circle cx="12" cy="12" r="1.3" fill="currentColor" /><circle cx="12" cy="18.5" r="1.3" fill="currentColor" /></>}
+  </svg>
+);
+
 export default function Home() {
   /* --- theme --- */
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
@@ -123,6 +134,7 @@ export default function Home() {
   /* --- scan --- */
   const [capturedImg, setCapturedImg] = useState('');
   const [capturedFile, setCapturedFile] = useState<File | null>(null);
+  const capturedFileState = capturedFile;
   const [prevNote, setPrevNote] = useState('');
   const [camMsg, setCamMsg] = useState('');
   const [camActive, setCamActive] = useState(false);
@@ -191,6 +203,25 @@ export default function Home() {
   /* --- shared tab --- */
   const [sharedTab, setSharedTab] = useState<'me' | 'by'>('me');
   const [sharedView, setSharedView] = useState<number | 'all' | null>(null);
+
+  /* --- dashboard / panels --- */
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [panel, setPanel] = useState<'none' | 'scan' | 'fav' | 'deleted' | 'reports' | 'prefs' | 'range'>('none');
+  const [dashTab, setDashTab] = useState<'fav' | 'recent' | 'shared' | 'deleted'>('recent');
+  const [quickMore, setQuickMore] = useState(false);
+  const [rangeFrom, setRangeFrom] = useState('');
+  const [rangeTo, setRangeTo] = useState('');
+  const [confirmDel, setConfirmDel] = useState<any>(null);
+  const [favs, setFavs] = useState<Set<string>>(new Set());
+  const [thumbs, setThumbs] = useState<Record<string, string>>({});
+  const [viewer, setViewer] = useState<{ url: string; pdf: boolean; title: string } | null>(null);
+  const [deletedBills, setDeletedBills] = useState<any[]>([]);
+  const [deletedLoading, setDeletedLoading] = useState(false);
+  const [editKey, setEditKey] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState<Record<string, string>>({});
+  const [savingBill, setSavingBill] = useState(false);
+  const [discarding, setDiscarding] = useState(false);
+  const savingRef = useRef(false);
 
   const applyProfile = (profile: any) => {
     const name = profile?.name?.trim() || profile?.contact || 'User';
@@ -280,6 +311,109 @@ export default function Home() {
       ...group,
       bills: group.bills.map(normalizeBill),
     })));
+  };
+
+  /* ===================== FAVOURITES (saved on this device) ===================== */
+  const favKey = user.id ? `travelogue:favs:${user.id}` : '';
+  useEffect(() => {
+    if (!favKey) { setFavs(new Set()); return; }
+    try { setFavs(new Set(JSON.parse(localStorage.getItem(favKey) || '[]'))); } catch { setFavs(new Set()); }
+  }, [favKey]);
+
+  const toggleFav = (id: string) => {
+    setFavs(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      try { if (favKey) localStorage.setItem(favKey, JSON.stringify([...next])); } catch { /* storage unavailable */ }
+      return next;
+    });
+  };
+
+  /* ===================== THUMBNAILS ===================== */
+  const thumbLoading = useRef<Set<string>>(new Set());
+  const loadThumb = async (b: any) => {
+    const id = String(b.id);
+    if (thumbs[id] || thumbLoading.current.has(id) || b.st === 'Processing') return;
+    thumbLoading.current.add(id);
+    try {
+      const file = await api.getBillFile(id);
+      const url = file.type === 'application/pdf' ? 'pdf' : URL.createObjectURL(file);
+      setThumbs(prev => ({ ...prev, [id]: url }));
+    } catch {
+      setThumbs(prev => ({ ...prev, [id]: 'error' }));
+    }
+  };
+
+  const openViewer = async (b: any) => {
+    try {
+      const file = await api.getBillFile(String(b.id));
+      setViewer({ url: URL.createObjectURL(file), pdf: file.type === 'application/pdf', title: b.m });
+    } catch (error) {
+      toast(`Could not load bill image: ${error instanceof Error ? error.message : 'Request failed'}`);
+    }
+  };
+
+  const closeViewer = () => {
+    if (viewer?.url.startsWith('blob:')) URL.revokeObjectURL(viewer.url);
+    setViewer(null);
+  };
+
+  /* ===================== DELETED BILLS ===================== */
+  const loadDeleted = async () => {
+    setDeletedLoading(true);
+    try {
+      const data = await api.getBills({ deleted: true });
+      setDeletedBills(data.map(normalizeBill));
+    } catch (error) {
+      toast(`Could not load deleted bills: ${error instanceof Error ? error.message : 'Request failed'}`);
+    } finally {
+      setDeletedLoading(false);
+    }
+  };
+
+  const openPanel = (p: 'scan' | 'fav' | 'deleted' | 'reports' | 'prefs' | 'range') => {
+    setMoreOpen(false);
+    setQuickMore(false);
+    setProfileMenuOpen(false);
+    setPanel(p);
+    if (p === 'deleted') void loadDeleted();
+  };
+
+  const deleteBill = (b: any) => setConfirmDel(b);
+  const confirmDeleteBill = async () => {
+    const b = confirmDel;
+    setConfirmDel(null);
+    if (!b) return;
+    try {
+      await api.deleteBill(String(b.id));
+      setModal('none');
+      await refreshBills();
+      if (dashTab === 'deleted') void loadDeleted();
+      toast('Bill moved to Deleted bills');
+    } catch (error) {
+      toast(`Could not delete bill: ${error instanceof Error ? error.message : 'Request failed'}`);
+    }
+  };
+
+  const restoreBill = async (b: any) => {
+    try {
+      await api.restoreBill(String(b.id));
+      await Promise.all([loadDeleted(), refreshBills()]);
+      toast('Bill restored');
+    } catch (error) {
+      toast(`Could not restore bill: ${error instanceof Error ? error.message : 'Request failed'}`);
+    }
+  };
+
+  const deleteForever = async (b: any) => {
+    if (!window.confirm(`Permanently delete the bill from ${b.m}? This also deletes its image and cannot be undone.`)) return;
+    try {
+      await api.deleteBill(String(b.id), true);
+      await loadDeleted();
+      toast('Bill deleted permanently');
+    } catch (error) {
+      toast(`Could not delete bill: ${error instanceof Error ? error.message : 'Request failed'}`);
+    }
   };
 
   /* ===================== THEME ===================== */
@@ -485,14 +619,20 @@ export default function Home() {
   };
 
   /* ===================== SCAN / CAMERA ===================== */
-  const goScan = () => {
+  // Scan button: let the user choose camera or gallery.
+  const goScan = () => openPanel('scan');
+
+  // "Take a photo": full-screen in-app camera (live preview + shutter) on phones and laptops.
+  // Falls back to the phone's own camera app when live camera access is unavailable.
+  const goLiveCam = () => {
+    setPanel('none');
     show('scan');
     setCamActive(false);
     setCamMsg('');
     setTimeout(async () => {
       setCamMsg('<spin>');
       if (!navigator.mediaDevices?.getUserMedia) {
-        setCamMsg('err:Live camera preview is unavailable in this browser. Use the device camera button below or upload a file.');
+        setCamMsg('err:This browser cannot open the camera here. Use your phone camera app or choose a photo from the gallery.');
         return;
       }
       try {
@@ -505,20 +645,29 @@ export default function Home() {
         setCamActive(true);
         setCamMsg('');
       } catch {
-        setCamMsg('err:Camera access was blocked or is unavailable. Allow camera permission, use the device camera button below, or upload a file.');
+        setCamMsg('err:Camera access was blocked or is unavailable. Allow camera permission in your browser settings, or use your phone camera app.');
       }
     }, 50);
   };
 
   const goUpload = () => {
+    setPanel('none');
     fileInputRef.current!.value = '';
     fileInputRef.current!.click();
-    if (screen !== 'scan') show('scan');
   };
 
-  const openCam = () => {
+  // Native camera app via <input capture> (fallback when live camera is unavailable).
+  const openNativeCam = () => {
+    setPanel('none');
     camInputRef.current!.value = '';
     camInputRef.current!.click();
+  };
+
+  // Phones/tablets open the built-in camera app; the in-browser camera needs HTTPS and fails on phones.
+  const openCam = () => {
+    const touch = typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches;
+    if (touch || !navigator.mediaDevices?.getUserMedia) openNativeCam();
+    else goLiveCam();
   };
 
   const capture = () => {
@@ -542,17 +691,36 @@ export default function Home() {
     }, 'image/jpeg', 0.85);
   };
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0];
-    if (!f) return;
+  // Phone photos are often stored sideways with an EXIF "rotate" flag that OCR ignores,
+  // and can be very large. Redraw upright and scale down before uploading.
+  const normalizePhoto = async (f: File): Promise<File> => {
+    if (!/^image\/(jpeg|jpg|png|webp|heic|heif)$/i.test(f.type)) return f;
+    try {
+      const bmp = await createImageBitmap(f, { imageOrientation: 'from-image' } as ImageBitmapOptions);
+      const scale = Math.min(1, 2400 / Math.max(bmp.width, bmp.height));
+      const c = document.createElement('canvas');
+      c.width = Math.round(bmp.width * scale);
+      c.height = Math.round(bmp.height * scale);
+      c.getContext('2d')!.drawImage(bmp, 0, 0, c.width, c.height);
+      bmp.close();
+      const blob = await new Promise<Blob | null>(r => c.toBlob(r, 'image/jpeg', 0.9));
+      return blob ? new File([blob], f.name.replace(/\.\w+$/, '') + '.jpg', { type: 'image/jpeg' }) : f;
+    } catch {
+      return f;
+    }
+  };
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const picked = e.target.files?.[0];
+    if (!picked) return;
+    const fromCamera = e.target === camInputRef.current;
+    const f = await normalizePhoto(picked);
     if (f.size > 10 * 1048576) {
-      show('scan');
-      setCamMsg('err:That file is larger than 10 MB. Choose a smaller file.');
+      toast('That file is larger than 10 MB. Choose a smaller file.');
       return;
     }
     if (!/^image\//.test(f.type) && f.type !== 'application/pdf') {
-      show('scan');
-      setCamMsg('err:Choose a bill image or PDF file.');
+      toast('Choose a bill image or PDF file.');
       return;
     }
     setCapturedFile(f);
@@ -567,7 +735,9 @@ export default function Home() {
     r.onload = () => {
       setCapturedImg(r.result as string);
       setPrevNote('Uploaded: ' + f.name);
-      show('prev');
+      // A photo just taken with the camera goes straight to OCR; gallery picks get a check first.
+      if (fromCamera) void uploadAndExtract({}, f);
+      else show('prev');
     };
     r.readAsDataURL(f);
   };
@@ -578,7 +748,8 @@ export default function Home() {
     setSaveSub(cats[k]?.[0] || '');
   };
 
-  const uploadAndExtract = async (selection: { view?: string; category?: string; subcategory?: string; isPersonal?: boolean } = {}) => {
+  const uploadAndExtract = async (selection: { view?: string; category?: string; subcategory?: string; isPersonal?: boolean } = {}, fileOverride?: File) => {
+    const capturedFile = fileOverride || capturedFileState;
     if (!capturedFile) {
       setOcrError('Choose or capture a bill before continuing.');
       return;
@@ -636,6 +807,8 @@ export default function Home() {
           t: false,
         };
       });
+      // Currency always defaults to INR; the user can change it in the Amount editor.
+      extractionFields.cur = { v: 'INR', c: 'found', t: false };
       const detectedCategory = source?.suggestedCategory || selection.category || result.category || 'Meals';
       setExtFields(extractionFields);
       setInvalidDocument(isInvalidDocument);
@@ -677,7 +850,10 @@ export default function Home() {
       setOcrError('Upload the bill before saving its details.');
       return;
     }
+    if (savingRef.current) return;
     const viewId = views.find((view: any) => view.name === extCont)?.id;
+    savingRef.current = true;
+    setSavingBill(true);
     try {
       const result = await api.confirmBill(curBill.id, {
         merchant: extFields.m?.v || '',
@@ -698,8 +874,83 @@ export default function Home() {
       show('bills');
     } catch (error) {
       setOcrError(error instanceof Error ? error.message : 'Could not save bill details.');
+    } finally {
+      savingRef.current = false;
+      setSavingBill(false);
     }
   };
+
+  // Cancel on the review screen: the upload already created the bill, so remove it and its file.
+  const cancelReview = async () => {
+    if (savingRef.current) return;
+    const edited = Object.values(extFields).some((f: any) => f?.t);
+    if (!window.confirm(edited
+      ? 'Discard this bill and your edits? The scanned image will be deleted.'
+      : 'Discard this bill? The scanned image will be deleted.')) return;
+    const id = curBill?.id;
+    savingRef.current = true;
+    setSavingBill(true);
+    setDiscarding(true);
+    try {
+      if (id) {
+        await api.deleteBill(String(id));
+        await api.deleteBill(String(id), true);
+      }
+      await refreshBills().catch(() => undefined);
+      toast('Bill discarded');
+      show('dash');
+    } catch (error) {
+      setOcrError(error instanceof Error ? error.message : 'Could not discard the bill.');
+    } finally {
+      savingRef.current = false;
+      setSavingBill(false);
+      setDiscarding(false);
+    }
+  };
+
+  /* ===================== EDIT POPUP (review screen) ===================== */
+  const toIsoDate = (v: string) => {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
+    const m = v.match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{2,4})$/);
+    if (!m) return '';
+    const y = m[3].length === 2 ? '20' + m[3] : m[3];
+    return `${y}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+  };
+
+  const openEdit = (key: string) => {
+    const f = (k: string) => extFields[k]?.v || '';
+    const drafts: Record<string, Record<string, string>> = {
+      date: { date: toIsoDate(f('date')) },
+      amount: { total: f('total'), cur: f('cur') || 'INR' },
+      no: { no: f('no') },
+      m: { m: f('m') },
+      tax: { tax: f('tax') },
+      pay: { pay: f('pay') },
+      items: { items: f('items') },
+      cat: { cat: extCat, sub: extSub },
+      view: { view: extCont, pers: extPers ? 'personal' : 'business' },
+    };
+    setEditDraft(drafts[key] || {});
+    setEditKey(key);
+  };
+
+  const saveEdit = () => {
+    const d = editDraft;
+    if (editKey === 'cat') {
+      if (d.cat !== extCat || d.sub !== extSub) setExtCatConf('edited');
+      setExtCat(d.cat || '');
+      setExtSub(d.sub || '');
+    } else if (editKey === 'view') {
+      setExtCont(d.view || '');
+      setExtPers(d.pers === 'personal');
+    } else {
+      Object.entries(d).forEach(([k, v]) => {
+        if ((extFields[k]?.v || '') !== v) editField(k, v);
+      });
+    }
+    setEditKey(null);
+  };
+
 
   /* ===================== BILLS FILTERS ===================== */
   const msLabel = () => {
@@ -751,8 +1002,17 @@ export default function Home() {
     setConts([]);
     setCats({});
     setShares({});
+    setDashTab('recent');
+    setRangeFrom('');
+    setRangeTo('');
+    setConfirmDel(null);
     setIncomingShared([]);
     setStack([]);
+    setPanel('none');
+    setMoreOpen(false);
+    setThumbs({});
+    setViewer(null);
+    setEditKey(null);
     setScreen('auth');
     setModal('none');
     setModalBill(null);
@@ -1036,9 +1296,27 @@ export default function Home() {
     return () => { document.body.style.overflow = previousOverflow; };
   }, [mobileFilter]);
 
+  const recentBills = bills.filter(b => b.st !== 'Processing').slice(0, 8);
+  useEffect(() => {
+    if (screen !== 'dash' && panel !== 'fav') return;
+    const wanted = panel === 'fav' || dashTab === 'fav' ? bills.filter(b => favs.has(String(b.id)))
+      : dashTab === 'shared' ? bills.filter(b => shRecips('b:' + b.id).length > 0)
+      : rangeFrom || rangeTo ? bills.filter(b => b.st !== 'Processing') : recentBills;
+    wanted.forEach(b => { void loadThumb(b); });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [screen, panel, bills, favs, dashTab, rangeFrom, rangeTo]);
+
+  useEffect(() => {
+    if (panel === 'none' && !viewer && !editKey) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = previousOverflow; };
+  }, [panel, viewer, editKey]);
+
   /* ===================== RENDER HELPERS ===================== */
   const isAuth = screen === 'auth';
-  const showBack = !['auth', 'dash'].includes(screen);
+  // Main sections are reached from the nav; Back is only for sub-screens (photo check, save, review).
+  const showBack = !['auth', 'dash', 'bills', 'cont', 'cats', 'shared'].includes(screen);
   const navActive = (id: string) => screen === id || (screen === 'ext' && id === 'bills');
 
   const BillItem = ({ b }: { b: any }) => {
@@ -1112,6 +1390,79 @@ export default function Home() {
   const sharedWith = shRecips(shareKey);
   const knownShareContacts = [...new Set(Object.values(shares).flat().map((share) => share.to))].sort();
 
+  /* ===================== RENDER REVIEW (after OCR) ===================== */
+  const badgeFor = (k: string) => {
+    const x = extFields[k] || { v: '', c: 'missing', t: false };
+    if (x.t) return { cls: 'acc', txt: 'Edited' };
+    if (!x.v) return { cls: 'err', txt: 'Missing' };
+    return x.c === 'found' ? { cls: 'ok', txt: 'Found' } : { cls: 'warn', txt: 'Check' };
+  };
+
+  // Compact tile for the key fields: tap anywhere on it to edit.
+  const Tile = ({ label, value, editKey: k, badgeKey, wide }: { label: string; value: string; editKey?: string; badgeKey?: string; wide?: boolean }) => {
+    const badge = badgeKey ? badgeFor(badgeKey) : null;
+    const body = (
+      <>
+        <span className="tl">
+          {label}
+          {badge && <i className={`dot ${badge.cls}`} title={badge.txt} aria-label={badge.txt} />}
+        </span>
+        <b className={value ? '' : 'mut'}>{value || 'Add'}</b>
+        {k ? <span className="tp" aria-hidden="true">✎</span> : <span className="tp" aria-hidden="true">🔒</span>}
+      </>
+    );
+    return k
+      ? <button type="button" className={`tile${wide ? ' wide' : ''}`} onClick={() => openEdit(k)} aria-label={`Edit ${label}: ${value || 'empty'}`}>{body}</button>
+      : <div className={`tile locked${wide ? ' wide' : ''}`}>{body}</div>;
+  };
+
+  const renderReview = () => {
+    const f = (k: string) => extFields[k]?.v || '';
+    const isPdf = capturedFile?.type === 'application/pdf';
+    const needCheck = ['date', 'total', 'no', 'm', 'tax', 'pay', 'items'].filter(k => badgeFor(k).cls !== 'ok' && badgeFor(k).cls !== 'acc').length;
+    return (
+      <>
+        {ocrError && <div className="msg err" role="alert">{ocrError}</div>}
+        <div className="rv-head">
+          <button type="button" className="thumb" onClick={() => capturedImg && setViewer({ url: capturedImg, pdf: isPdf, title: 'Scanned bill' })} aria-label="View scanned bill">
+            {isPdf ? <span>PDF</span> : capturedImg ? <img src={capturedImg} alt="" /> : <span>▤</span>}
+          </button>
+          <div className="g">
+            <button type="button" className="rv-merchant" onClick={() => openEdit('m')} aria-label="Edit business name">
+              <b>{f('m') || 'Add business name'}</b><span aria-hidden="true">✎</span>
+            </button>
+            <span className="sm mut">{needCheck ? `${needCheck} field${needCheck === 1 ? '' : 's'} to check · tap to edit` : 'All details look good'}</span>
+          </div>
+        </div>
+
+        <div className="tiles">
+          <Tile label="Amount" value={f('total') ? money(f('total'), f('cur') || 'INR') : ''} editKey="amount" badgeKey="total" wide />
+          <Tile label="Bill date" value={f('date') ? (toIsoDate(f('date')) ? fdate(toIsoDate(f('date'))) : f('date')) : ''} editKey="date" badgeKey="date" />
+          <Tile label="Invoice no." value={f('no')} editKey="no" badgeKey="no" />
+          <Tile label="Category" value={[extCat, extSub].filter(Boolean).join(' · ')} editKey="cat" wide />
+          <Tile label="Name" value={user.name} wide />
+        </div>
+
+        <details className="rv-more">
+          <summary>More details <span className="sm mut">Tax, payment, items, view</span></summary>
+          <div className="tiles">
+            <Tile label="Tax" value={f('tax') ? money(f('tax'), f('cur') || 'INR') : ''} editKey="tax" badgeKey="tax" />
+            <Tile label="Payment" value={f('pay')} editKey="pay" badgeKey="pay" />
+            <Tile label="View" value={`${extCont || 'None'} · ${extPers ? 'Personal' : 'Business'}`} editKey="view" wide />
+            <Tile label="Items" value={f('items')} editKey="items" badgeKey="items" wide />
+          </div>
+        </details>
+
+        <div className="rv-legend sm mut"><i className="dot ok" /> Found <i className="dot warn" /> Check <i className="dot err" /> Missing <i className="dot acc" /> Edited</div>
+
+        <div className="actionbar">
+          <button className="btn" onClick={() => void cancelReview()} disabled={savingBill}>{discarding ? 'Discarding…' : 'Cancel'}</button>
+          <button className="btn p" onClick={confirmExt} disabled={savingBill}>{savingBill && !discarding ? 'Saving…' : 'Save bill'}</button>
+        </div>
+      </>
+    );
+  };
+
   /* ===================== MAIN RENDER ===================== */
   return (
     <>
@@ -1140,46 +1491,51 @@ export default function Home() {
         {/* ===== MAIN ===== */}
         <main>
           {/* Top Header */}
-          <header className="top">
+          <header className={`top${screen === 'dash' ? ' top-dash' : ''}${!isAuth ? ' top-dark' : ''}`}>
             <div className="tl">
               {showBack && (
                 <button className="back" onClick={goBack} aria-label="Go back">‹ Back</button>
               )}
-              <div className="brand" aria-label="Travelogue">
-                <AppMark />
-              </div>
+              {!isAuth && screen === 'dash' ? (
+                <div className="hello">
+                  <i className="av">{user.initials}</i>
+                  <b>{user.name}</b>
+                </div>
+              ) : (
+                <div className="brand" aria-label="Travelogue">
+                  <AppMark />
+                </div>
+              )}
             </div>
             <div className="tr">
-              <button className="tbtn" onClick={toggleTheme} aria-label="Switch theme">
-                {theme === 'dark' ? <><span>☀</span><span className="tt"> Light mode</span></> : <><span>☾</span><span className="tt"> Dark mode</span></>}
-              </button>
-              {!isAuth && (
-                <>
-                  <div className="profile-menu-wrap">
-                    <button
-                      type="button"
-                      className="profile-trigger"
-                      aria-haspopup="menu"
-                      aria-expanded={profileMenuOpen}
-                      aria-label={`Profile menu for ${user.name}`}
-                      onClick={() => setProfileMenuOpen((open) => !open)}
-                    >
-                      <span className="usr">
-                        <i id="uav">{user.initials}</i>
-                        <span id="uname">{user.first}</span>
-                      </span>
-                      <span className="profile-chevron" aria-hidden="true">▾</span>
-                    </button>
-                    {profileMenuOpen && (
-                      <div className="profile-menu" role="menu">
-                        <span className="profile-menu-name">{user.name}</span>
-                        <button type="button" role="menuitem" className="logout-btn" onClick={logout}>
-                          <span aria-hidden="true">↪</span> Log out
+              {isAuth ? (
+                <button className="tbtn" onClick={toggleTheme} aria-label="Switch theme">
+                  {theme === 'dark' ? <><span>☀</span><span className="tt"> Light mode</span></> : <><span>☾</span><span className="tt"> Dark mode</span></>}
+                </button>
+              ) : (
+                <div className="profile-menu-wrap">
+                  <button
+                    type="button"
+                    className="tbtn icon-btn burger"
+                    aria-haspopup="menu"
+                    aria-expanded={moreOpen}
+                    aria-label="Menu"
+                    onClick={() => setMoreOpen(open => !open)}
+                  >
+                    <span aria-hidden="true">☰</span>
+                  </button>
+                  {moreOpen && (
+                    <>
+                      <div className="menu-scrim" onClick={() => setMoreOpen(false)} />
+                      <div className="profile-menu more-menu" role="menu">
+                        <button type="button" role="menuitem" onClick={() => openPanel('prefs')}><span aria-hidden="true">⚙</span> Preferences</button>
+                        <button type="button" role="menuitem" className="logout-btn" onClick={() => { setMoreOpen(false); logout(); }}>
+                          <span aria-hidden="true">↪</span> Log Off
                         </button>
                       </div>
-                    )}
-                  </div>
-                </>
+                    </>
+                  )}
+                </div>
               )}
             </div>
           </header>
@@ -1244,43 +1600,142 @@ export default function Home() {
           {/* ===== DASHBOARD ===== */}
           {screen === 'dash' && (
             <section id="s-dash">
-              <div className="card herod">
-                <svg className="ill" viewBox="0 0 120 96" aria-hidden="true">
-                  <circle className="il-bg" cx="60" cy="48" r="44" />
-                  <path className="il-p" d="M38 14h44v64l-7.3-5.4L67.3 78 60 72.6 52.7 78l-7.4-5.4L38 78z" />
-                  <path className="il-t" d="M46 28h28M46 38h28M46 48h28M46 58h14" />
-                  <path className="il-s" d="M26 30V20a4 4 0 0 1 4-4h10M94 30V20a4 4 0 0 0-4-4H80M26 66v10a4 4 0 0 0 4 4h10M94 66v10a4 4 0 0 1-4 4H80" />
-                  <path className="il-b" d="M30 43h60" />
-                </svg>
-                <h1>Hello, {user.first}</h1>
-                <p className="mut">Take a photo of your bill to save it.</p>
+              <nav className="qnav" aria-label="Bill lists">
+                {([['fav', 'star', 'Favorites'], ['recent', 'clock', 'Recent'], ['shared', 'share', 'Shared'], ['deleted', 'trash', 'Deleted']] as const).map(([id, ic, label]) => (
+                  <button key={id} type="button" className={`qn${dashTab === id ? ' on' : ''}`} aria-pressed={dashTab === id}
+                    onClick={() => { setDashTab(id); setQuickMore(false); if (id === 'deleted') void loadDeleted(); }}>
+                    <QIcon name={ic} />{label}
+                  </button>
+                ))}
+                <div className="qn-wrap">
+                  <button type="button" className={`qn${quickMore ? ' on' : ''}`} aria-haspopup="menu" aria-expanded={quickMore} onClick={() => setQuickMore(o => !o)}>
+                    <QIcon name="more" />More
+                  </button>
+                  {quickMore && (
+                    <>
+                      <div className="menu-scrim" onClick={() => setQuickMore(false)} />
+                      <div className="profile-menu more-menu qmenu" role="menu">
+                        <button type="button" role="menuitem" onClick={() => openPanel('range')}><span aria-hidden="true">📅</span> Date Range</button>
+                        <button type="button" role="menuitem" onClick={() => openPanel('reports')}><span aria-hidden="true">▥</span> Reports</button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              </nav>
+              {(() => {
+                const inRange = (b: any) => {
+                  const d = String(b.date || '').slice(0, 10);
+                  if (rangeFrom && (!d || d < rangeFrom)) return false;
+                  if (rangeTo && (!d || d > rangeTo)) return false;
+                  return true;
+                };
+                const active = bills.filter(b => b.st !== 'Processing');
+                const title = { fav: 'Favorites', recent: 'Recent', shared: 'Shared', deleted: 'Deleted' }[dashTab];
+                const sharedIn = incomingShared.flatMap((g: any) => g.bills.map((b: any) => ({ ...b, _in: true, _from: g.who?.name })));
+                const list: any[] = (dashTab === 'fav' ? active.filter(b => favs.has(String(b.id)))
+                  : dashTab === 'recent' ? (rangeFrom || rangeTo ? active : recentBills)
+                  : dashTab === 'shared' ? [...active.filter(b => shRecips('b:' + b.id).length > 0), ...sharedIn]
+                  : deletedBills).filter(inRange);
+                const empty = { fav: 'No favorites yet. Tap ☆ next to a bill to add it here.', recent: 'No bills yet. Tap Scan Bill below to add your first bill.', shared: 'No shared bills yet. Tap the share icon on a bill to share it.', deleted: 'No deleted bills.' }[dashTab];
+                return (
+                  <>
+                    <div className="dash-head">
+                      <h2>{title}</h2>
+                      {dashTab === 'recent' && bills.length > 0 && !rangeFrom && !rangeTo && <button className="btn lnk" onClick={() => show('bills')}>See all ({bills.length})</button>}
+                    </div>
+                    {(rangeFrom || rangeTo) && (
+                      <div className="range-chip">
+                        <span>📅 {rangeFrom ? fdate(rangeFrom) : 'Any'} – {rangeTo ? fdate(rangeTo) : 'Any'}</span>
+                        <button type="button" onClick={() => { setRangeFrom(''); setRangeTo(''); }} aria-label="Clear date range">×</button>
+                      </div>
+                    )}
+                    {dashTab === 'deleted' && deletedLoading ? <div className="spin" /> : !list.length ? (
+                      <div className="card empty dash-empty"><p className="mut sm">{empty}</p></div>
+                    ) : dashTab === 'deleted' ? (
+                      <div className="list">
+                        {list.map(b => (
+                          <div key={b.id} className="drow">
+                            <span className="g"><b>{b.m}</b><span className="sm mut">{fdate(b.date)} · {money(b.total, b.cur)}</span></span>
+                            <button type="button" className="btn" onClick={() => void restoreBill(b)}>Restore</button>
+                            <button type="button" className="btn danger" onClick={() => void deleteForever(b)} aria-label={`Delete bill from ${b.m} forever`}>Delete forever</button>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="list recent">
+                        {list.map(b => {
+                          const id = String(b.id);
+                          const t = thumbs[id];
+                          if (b._in) {
+                            return (
+                              <div key={'in' + id} className="rrow">
+                                <span className="star" aria-hidden="true" />
+                                <button type="button" className="rinfo" onClick={() => void openSharedBill(b)}>
+                                  <span className="g"><b>{b.m}</b><span className="sm mut">Shared with you{b._from ? ' by ' + b._from : ''} · {fdate(b.date)}</span></span>
+                                  <span className="amt">{money(b.total, b.cur)}</span>
+                                </button>
+                              </div>
+                            );
+                          }
+                          return (
+                            <div key={id} className="rrow">
+                              <button type="button" className={`star${favs.has(id) ? ' on' : ''}`} onClick={() => toggleFav(id)}
+                                aria-pressed={favs.has(id)} aria-label={favs.has(id) ? 'Remove from favorites' : 'Add to favorites'}>
+                                {favs.has(id) ? '★' : '☆'}
+                              </button>
+                              <button type="button" className="thumb" onClick={() => void openViewer(b)} aria-label={`View image of bill from ${b.m}`}>
+                                {t && t !== 'pdf' && t !== 'error'
+                                  ? <img src={t} alt="" />
+                                  : <span aria-hidden="true">{t === 'pdf' ? 'PDF' : '▤'}</span>}
+                              </button>
+                              <button type="button" className="rinfo" onClick={() => openBillModal(b.id)}>
+                                <span className="g">
+                                  <b>{b.m}</b>
+                                  <span className="sm mut">{fdate(b.date)}{b.cat ? ' · ' + b.cat : ''}</span>
+                                </span>
+                                <span className="amt">{money(b.total, b.cur)}</span>
+                              </button>
+                              <button type="button" className="ract" onClick={() => openShare('b', b.id)} aria-label={`Share bill from ${b.m}`} title="Share"><QIcon name="share" /></button>
+                              <button type="button" className="ract del" onClick={() => deleteBill(b)} aria-label={`Delete bill from ${b.m}`} title="Delete"><QIcon name="trash" /></button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
+              <div className="scan-dock">
                 <button className="btn p scanbig" onClick={goScan}>📷 Scan Bill</button>
-                <p style={{ margin: '16px 0 0' }}>
-                  <button className="btn lnk" onClick={goUpload}>or upload from gallery</button>
-                </p>
               </div>
-              <p style={{ textAlign: 'center', marginTop: 18 }}>
-                <button className="btn" onClick={() => show('bills')}>View my bills <span className="mut sm">({bills.length})</span></button>
-              </p>
             </section>
           )}
 
-          {/* ===== SCAN SCREEN ===== */}
+          {/* ===== SCAN SCREEN: full-screen camera ===== */}
           {screen === 'scan' && (
-            <section className="narrow" id="s-scan">
-              <h1>Scan bill</h1>
-              <p className="mut">Place the bill flat, in good light, and fill the frame.</p>
-              <div className="card">
-                <video ref={videoRef} playsInline muted hidden={!camActive} />
-                {camMsg.startsWith('err:') && (
-                  <div className="msg err">{camMsg.slice(4)}</div>
-                )}
-                {camMsg === '<spin>' && <div className="spin" />}
-                <div className="acts">
-                  {camActive && <button className="btn p" onClick={capture}>Capture</button>}
-                  <button className="btn p" onClick={openCam}>Use device camera</button>
-                  <button className="btn" onClick={goUpload}>Upload Bill</button>
+            <section className="camview" id="s-scan" aria-label="Camera">
+              <video ref={videoRef} playsInline muted autoPlay className={camActive ? 'on' : ''} />
+              {camActive && <div className="camframe" aria-hidden="true"><span>Fit the whole bill inside the frame</span></div>}
+              {!camActive && (
+                <div className="camstate">
+                  {camMsg === '<spin>' && <><div className="spin" /><p>Opening camera…</p></>}
+                  {camMsg.startsWith('err:') && (
+                    <>
+                      <p>{camMsg.slice(4)}</p>
+                      <button className="btn p" onClick={openNativeCam}>Use phone camera app</button>
+                      <button className="btn" onClick={goLiveCam}>Try again</button>
+                    </>
+                  )}
                 </div>
+              )}
+              <div className="cambar">
+                <button type="button" className="camside" onClick={goUpload} aria-label="Choose from gallery">
+                  <span aria-hidden="true">🖼</span><small>Gallery</small>
+                </button>
+                <button type="button" className="shutter" onClick={capture} disabled={!camActive} aria-label="Take photo" />
+                <button type="button" className="camside" onClick={() => show('dash')} aria-label="Close camera">
+                  <span aria-hidden="true">✕</span><small>Close</small>
+                </button>
               </div>
             </section>
           )}
@@ -1343,8 +1798,8 @@ export default function Home() {
           {/* ===== EXTRACTION SCREEN ===== */}
           {screen === 'ext' && (
             <section className="mid" id="s-ext">
-              <h1>Bill details</h1>
-              <div className="card" id="extBox">
+              <h1>Review bill</h1>
+              <div className={ocrDone && !invalidDocument && !(ocrError && !curBill) ? '' : 'card'} id="extBox">
                 {ocrError && !curBill ? (
                   <>
                     <div className="msg err" role="alert">{ocrError}</div>
@@ -1375,70 +1830,7 @@ export default function Home() {
                     </div>
                   </>
                 ) : (
-                  <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
-                    {capturedFile?.type === 'application/pdf'
-                      ? <iframe className="pdf-preview" src={capturedImg} title="Scanned bill PDF" />
-                      : <img className="prev" style={{ maxWidth: 200 }} src={capturedImg} alt="Scanned bill" />}
-                    <div style={{ flex: '1 1 280px' }}>
-                      {ocrError && <div className="msg err" role="alert">{ocrError}</div>}
-                      <div className="msg info" style={{ marginTop: 0 }}>
-                        Local text recognition may miss or misread details. Check every field and choose the correct category before saving.
-                      </div>
-                      {FIELDS.map(([k, l]) => {
-                        const x = extFields[k] || { v: '', c: 'missing', t: false };
-                        const badge = x.t
-                          ? { cls: 'acc', txt: 'Edited by you' }
-                          : x.c === 'found' ? { cls: 'ok', txt: 'Found' }
-                            : x.c === 'uncertain' ? { cls: 'warn', txt: 'Uncertain: please check' }
-                              : { cls: 'err', txt: 'Missing: enter manually' };
-                        return (
-                          <div key={k} className="fld">
-                            <label htmlFor={`e_${k}`}>{l}</label>
-                            <span className={`pill ${badge.cls}`}>{badge.txt}</span>
-                            {k === 'items'
-                              ? <textarea id={`e_${k}`} rows={4} value={x.v} placeholder="Not found on bill"
-                                  onChange={e => editField(k, e.target.value)} />
-                              : <input type="text" id={`e_${k}`} value={x.v} placeholder="Not found on bill"
-                                  onChange={e => editField(k, e.target.value)} />}
-                          </div>
-                        );
-                      })}
-                      {/* Category (editable) */}
-                      <div className="fld">
-                        <label htmlFor="x_cat">Category</label>
-                        <span className={`pill ${extCatConf === 'uncertain' ? 'warn' : extCatConf === 'edited' ? 'acc' : extCatConf === 'missing' ? 'err' : 'ok'}`}>
-                          {extCatConf === 'uncertain' ? 'Suggested: please confirm'
-                            : extCatConf === 'edited' ? 'Edited by you'
-                              : extCatConf === 'found' ? 'Auto-detected'
-                                : extCatConf === 'selected' ? 'Selected before upload'
-                                  : 'Choose a category'}
-                        </span>
-                        <select id="x_cat" style={{ gridColumn: '1/-1' }} value={extCat} onChange={e => {
-                          setExtCat(e.target.value);
-                          setExtSub(cats[e.target.value]?.[0] || '');
-                          setExtCatConf('edited');
-                        }}>
-                          <option value="">Choose a category</option>
-                          {Object.keys(cats).map(k => <option key={k}>{k}</option>)}
-                        </select>
-                      </div>
-                      <label htmlFor="x_sub">Subcategory</label>
-                      <select id="x_sub" value={extSub} onChange={e => setExtSub(e.target.value)}>
-                        {(cats[extCat] || []).map(s => <option key={s}>{s}</option>)}
-                      </select>
-                      <label htmlFor="x_cont">View</label>
-                      <select id="x_cont" value={extCont} onChange={e => setExtCont(e.target.value)}>
-                        {conts.map(c => <option key={c}>{c}</option>)}
-                      </select>
-                      <label className="chk">
-                        <input type="checkbox" checked={extPers} onChange={e => setExtPers(e.target.checked)} /> Personal expense
-                      </label>
-                      <div className="acts">
-                        <button className="btn p" onClick={confirmExt}>Save bill</button>
-                        <button className="btn" onClick={() => show('dash')}>Review later</button>
-                      </div>
-                    </div>
-                  </div>
+                  renderReview()
                 )}
               </div>
             </section>
@@ -1693,7 +2085,7 @@ export default function Home() {
       </div>
 
       {/* ===== BOTTOM NAV (mobile) ===== */}
-      {!isAuth && (
+      {!isAuth && screen !== 'scan' && screen !== 'ext' && (
         <nav className="bnav" id="nav2">
           {NAV_ITEMS.map(n => (
             <button key={n.id} className={`nav${navActive(n.id) ? ' on' : ''}`} onClick={() => show(n.id as Screen)}>
@@ -1702,6 +2094,230 @@ export default function Home() {
             </button>
           ))}
         </nav>
+      )}
+
+      {/* ===== SHEETS: scan choice, favourites, deleted, reports ===== */}
+      {panel !== 'none' && (
+        <div className="sheet-backdrop" onClick={e => { if (e.target === e.currentTarget) setPanel('none'); }}>
+          <section className="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
+            <div className="sheet-grab" aria-hidden="true" />
+            <div className="sheet-head">
+              <h2 id="sheet-title">
+                {panel === 'scan' ? 'Add a bill' : panel === 'fav' ? 'Favourite bills' : panel === 'deleted' ? 'Deleted bills' : panel === 'prefs' ? 'Preferences' : panel === 'range' ? 'Date range' : 'Reports'}
+              </h2>
+              <button type="button" className="x" onClick={() => setPanel('none')} aria-label="Close">×</button>
+            </div>
+
+            {panel === 'scan' && (
+              <div className="choice-list">
+                <button type="button" className="choice" onClick={openCam}>
+                  <span className="ci" aria-hidden="true">📷</span>
+                  <span className="g"><b>Take a photo</b><span className="sm mut">Opens the camera. Capture the bill, then check the photo.</span></span>
+                </button>
+                <button type="button" className="choice" onClick={goUpload}>
+                  <span className="ci" aria-hidden="true">🖼</span>
+                  <span className="g"><b>Choose from gallery or files</b><span className="sm mut">A photo you already took, a screenshot, or a PDF invoice (max 10 MB).</span></span>
+                </button>
+              </div>
+            )}
+
+            {panel === 'fav' && (() => {
+              const list = bills.filter(b => favs.has(String(b.id)));
+              return list.length ? (
+                <div className="list recent">
+                  {list.map(b => {
+                    const id = String(b.id); const t = thumbs[id];
+                    return (
+                      <div key={id} className="rrow">
+                        <button type="button" className="thumb" onClick={() => void openViewer(b)} aria-label={`View image of bill from ${b.m}`}>
+                          {t && t !== 'pdf' && t !== 'error' ? <img src={t} alt="" /> : <span aria-hidden="true">{t === 'pdf' ? 'PDF' : '▤'}</span>}
+                        </button>
+                        <button type="button" className="rinfo" onClick={() => { setPanel('none'); void openBillModal(b.id); }}>
+                          <span className="g"><b>{b.m}</b><span className="sm mut">{fdate(b.date)}</span></span>
+                          <span className="amt">{money(b.total, b.cur)}</span>
+                        </button>
+                        <button type="button" className="star on" onClick={() => toggleFav(id)} aria-label="Remove from favourites">★</button>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : <p className="mut">No favourites yet. Tap ☆ next to a bill to add it here.</p>;
+            })()}
+
+            {panel === 'prefs' && (
+              <div className="choice-list">
+                <button type="button" className="choice" onClick={toggleTheme}>
+                  <span className="ci" aria-hidden="true">{theme === 'dark' ? '☀' : '☾'}</span>
+                  <span className="g"><b>{theme === 'dark' ? 'Light mode' : 'Dark mode'}</b><span className="sm mut">Currently using {theme} mode.</span></span>
+                </button>
+              </div>
+            )}
+
+            {panel === 'range' && (
+              <div className="range-form">
+                <label htmlFor="rg_from">From</label>
+                <input id="rg_from" type="date" value={rangeFrom} max={rangeTo || undefined} onChange={e => setRangeFrom(e.target.value)} />
+                <label htmlFor="rg_to">To</label>
+                <input id="rg_to" type="date" value={rangeTo} min={rangeFrom || undefined} onChange={e => setRangeTo(e.target.value)} />
+                <div className="acts">
+                  <button type="button" className="btn p" onClick={() => setPanel('none')}>Apply</button>
+                  <button type="button" className="btn" onClick={() => { setRangeFrom(''); setRangeTo(''); }}>Clear</button>
+                </div>
+                <p className="sm mut">Filters the bill list by the date printed on each bill.</p>
+              </div>
+            )}
+
+            {panel === 'deleted' && (
+              deletedLoading ? <div className="spin" /> : deletedBills.length ? (
+                <div className="list">
+                  <p className="sm mut" style={{ margin: 0 }}>Deleted bills are hidden from My bills and from people you shared them with. Restore one to bring it back.</p>
+                  {deletedBills.map(b => (
+                    <div key={b.id} className="drow">
+                      <span className="g"><b>{b.m}</b><span className="sm mut">{fdate(b.date)} · {money(b.total, b.cur)}</span></span>
+                      <button type="button" className="btn" onClick={() => void restoreBill(b)}>Restore</button>
+                      <button type="button" className="btn danger" onClick={() => void deleteForever(b)} aria-label={`Delete bill from ${b.m} forever`}>Delete forever</button>
+                    </div>
+                  ))}
+                </div>
+              ) : <p className="mut">No deleted bills.</p>
+            )}
+
+            {panel === 'reports' && (() => {
+              const real = bills.filter(b => b.st !== 'Processing' && b.st !== 'Not a bill');
+              const sum = (list: any[]) => list.reduce((a, b) => a + (parseFloat(b.total) || 0), 0);
+              const ym = (d: Date) => d.toISOString().slice(0, 7);
+              const thisMonth = real.filter(b => (b.date || '').startsWith(ym(NOW)));
+              const byCat: Record<string, any[]> = {};
+              real.forEach(b => { (byCat[b.cat || 'Uncategorised'] = byCat[b.cat || 'Uncategorised'] || []).push(b); });
+              const months = Array.from({ length: 6 }, (_, i) => new Date(NOW.getFullYear(), NOW.getMonth() - 5 + i, 15));
+              const monthTotals = months.map(m => sum(real.filter(b => (b.date || '').startsWith(ym(m)))));
+              const maxMonth = Math.max(1, ...monthTotals);
+              const cats2 = Object.entries(byCat).sort((a, b) => sum(b[1]) - sum(a[1]));
+              const cur = real[0]?.cur || 'INR';
+              return (
+                <div className="report">
+                  <div className="kpis">
+                    <div className="kpi"><span className="sm mut">This month</span><b>{money(String(sum(thisMonth)), cur)}</b><span className="sm mut">{thisMonth.length} bill{thisMonth.length === 1 ? '' : 's'}</span></div>
+                    <div className="kpi"><span className="sm mut">All bills</span><b>{money(String(sum(real)), cur)}</b><span className="sm mut">{real.length} bill{real.length === 1 ? '' : 's'}</span></div>
+                    <div className="kpi"><span className="sm mut">Personal</span><b>{money(String(sum(real.filter(b => b.pers))), cur)}</b><span className="sm mut">Business {money(String(sum(real.filter(b => !b.pers))), cur)}</span></div>
+                  </div>
+                  <h3>Last 6 months</h3>
+                  <div className="bars">
+                    {months.map((m, i) => (
+                      <div key={i} className="bar" title={money(String(monthTotals[i]), cur)}>
+                        <span className="fill" style={{ height: `${Math.round((monthTotals[i] / maxMonth) * 100)}%` }} />
+                        <span className="sm mut">{m.toLocaleDateString('en-IN', { month: 'short' })}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <h3>By category</h3>
+                  {cats2.length ? cats2.map(([c, list]) => (
+                    <div key={c} className="crow">
+                      <span className="g"><b>{c}</b><span className="sm mut">{list.length} bill{list.length === 1 ? '' : 's'}</span></span>
+                      <span className="amt">{money(String(sum(list)), cur)}</span>
+                    </div>
+                  )) : <p className="mut">No bills yet.</p>}
+                  <p className="sm mut">Totals use the date printed on each bill. Bills in other currencies are added as-is.</p>
+                </div>
+              );
+            })()}
+          </section>
+        </div>
+      )}
+
+      {confirmDel && (
+        <div className="modal-backdrop" onClick={e => { if (e.target === e.currentTarget) setConfirmDel(null); }}>
+          <dialog open className="edit-pop confirm-pop" role="alertdialog" aria-labelledby="cd_t" onClick={e => e.stopPropagation()}>
+            <h2 id="cd_t">Are you sure?</h2>
+            <div className="acts">
+              <button type="button" className="btn danger" onClick={() => void confirmDeleteBill()}>Confirm Delete</button>
+              <button type="button" className="btn" onClick={() => setConfirmDel(null)}>Cancel</button>
+            </div>
+          </dialog>
+        </div>
+      )}
+
+      {/* ===== EDIT POPUP (review screen) ===== */}
+      {editKey && (
+        <div className="modal-backdrop" onClick={e => { if (e.target === e.currentTarget) setEditKey(null); }}>
+          <dialog open className="edit-pop" onClick={e => e.stopPropagation()}>
+            <button className="x" onClick={() => setEditKey(null)} aria-label="Close">×</button>
+            <h2>{({ date: 'Bill date', amount: 'Amount', no: 'Invoice number', m: 'Business name', tax: 'Tax', pay: 'Payment details', items: 'Items', cat: 'Category', view: 'View and type' } as Record<string, string>)[editKey]}</h2>
+            {editKey === 'date' && (
+              <>
+                <label htmlFor="ed_date">Date on the bill</label>
+                <input id="ed_date" type="date" value={editDraft.date || ''} max={new Date().toISOString().slice(0, 10)} onChange={e => setEditDraft({ date: e.target.value })} />
+              </>
+            )}
+            {editKey === 'amount' && (
+              <>
+                <label htmlFor="ed_total">Total amount</label>
+                <input id="ed_total" type="text" inputMode="decimal" value={editDraft.total || ''} placeholder="0.00" onChange={e => setEditDraft(d => ({ ...d, total: e.target.value.replace(/[^0-9.]/g, '') }))} />
+                <label htmlFor="ed_cur">Currency</label>
+                <select id="ed_cur" value={editDraft.cur || 'INR'} onChange={e => setEditDraft(d => ({ ...d, cur: e.target.value }))}>
+                  {['INR', 'USD', 'EUR', 'GBP', 'AED', 'SGD'].map(c => <option key={c}>{c}</option>)}
+                </select>
+              </>
+            )}
+            {editKey === 'tax' && (
+              <>
+                <label htmlFor="ed_tax">Total tax (GST etc.)</label>
+                <input id="ed_tax" type="text" inputMode="decimal" value={editDraft.tax || ''} placeholder="0.00" onChange={e => setEditDraft({ tax: e.target.value.replace(/[^0-9.]/g, '') })} />
+              </>
+            )}
+            {(editKey === 'no' || editKey === 'm' || editKey === 'pay') && (
+              <>
+                <label htmlFor="ed_txt">{editKey === 'no' ? 'Invoice / bill number' : editKey === 'm' ? 'Business name' : 'Payment method'}</label>
+                <input id="ed_txt" type="text" value={editDraft[editKey] || ''} onChange={e => setEditDraft({ [editKey]: e.target.value })} autoFocus />
+              </>
+            )}
+            {editKey === 'items' && (
+              <>
+                <label htmlFor="ed_items">Items (one per line)</label>
+                <textarea id="ed_items" rows={6} value={editDraft.items || ''} onChange={e => setEditDraft({ items: e.target.value })} />
+              </>
+            )}
+            {editKey === 'cat' && (
+              <>
+                <label htmlFor="ed_cat">Category</label>
+                <select id="ed_cat" value={editDraft.cat || ''} onChange={e => setEditDraft({ cat: e.target.value, sub: cats[e.target.value]?.[0] || '' })}>
+                  <option value="">Choose a category</option>
+                  {Object.keys(cats).map(k => <option key={k}>{k}</option>)}
+                </select>
+                <label htmlFor="ed_sub">Subcategory</label>
+                <select id="ed_sub" value={editDraft.sub || ''} onChange={e => setEditDraft(d => ({ ...d, sub: e.target.value }))}>
+                  {(cats[editDraft.cat] || []).map(x => <option key={x}>{x}</option>)}
+                </select>
+              </>
+            )}
+            {editKey === 'view' && (
+              <>
+                <label htmlFor="ed_view">View</label>
+                <select id="ed_view" value={editDraft.view || ''} onChange={e => setEditDraft(d => ({ ...d, view: e.target.value }))}>
+                  {conts.map(c => <option key={c}>{c}</option>)}
+                </select>
+                <div className="seg" role="group" aria-label="Expense type" style={{ marginTop: 14 }}>
+                  <button type="button" className={editDraft.pers !== 'personal' ? 'on' : ''} onClick={() => setEditDraft(d => ({ ...d, pers: 'business' }))}>Business</button>
+                  <button type="button" className={editDraft.pers === 'personal' ? 'on' : ''} onClick={() => setEditDraft(d => ({ ...d, pers: 'personal' }))}>Personal</button>
+                </div>
+              </>
+            )}
+            <div className="acts">
+              <button className="btn p" onClick={saveEdit}>Save</button>
+              <button className="btn" onClick={() => setEditKey(null)}>Cancel</button>
+            </div>
+          </dialog>
+        </div>
+      )}
+
+      {/* ===== IMAGE VIEWER ===== */}
+      {viewer && (
+        <div className="modal-backdrop viewer" onClick={closeViewer}>
+          <button className="x" onClick={closeViewer} aria-label="Close image">×</button>
+          {viewer.pdf
+            ? <iframe className="pdf-preview" src={viewer.url} title={viewer.title} onClick={e => e.stopPropagation()} />
+            : <img src={viewer.url} alt={`Bill: ${viewer.title}`} onClick={e => e.stopPropagation()} />}
+        </div>
       )}
 
       {mobileFilter && screen === 'bills' && (
@@ -1822,6 +2438,10 @@ export default function Home() {
             </div>
             <div className="acts">
               <button className="btn p ic" onClick={() => { setModal('none'); openShare('b', modalBill.id); }}><ShareIcon />Share</button>
+              <button className="btn" onClick={() => toggleFav(String(modalBill.id))}>
+                {favs.has(String(modalBill.id)) ? '★ Favourite' : '☆ Add to favourites'}
+              </button>
+              <button className="btn danger" onClick={() => void deleteBill(modalBill)}>Delete</button>
               <button className="btn" onClick={() => setModal('none')}>Close</button>
             </div>
           </dialog>

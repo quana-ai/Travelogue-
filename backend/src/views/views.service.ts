@@ -9,7 +9,7 @@ export class ViewsService {
     const views = await this.prisma.view.findMany({
       where: { userId },
       include: {
-        _count: { select: { bills: true } },
+        _count: { select: { bills: { where: { deletedAt: null } } } },
       },
       orderBy: { createdAt: 'asc' },
     });

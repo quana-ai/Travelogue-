@@ -117,8 +117,9 @@ export const api = {
       body: JSON.stringify(data),
     }),
 
-  getBills: (filters: { q?: string; viewId?: string; category?: string; dateFilter?: string; fromDate?: string; toDate?: string } = {}) => {
+  getBills: (filters: { q?: string; viewId?: string; category?: string; dateFilter?: string; fromDate?: string; toDate?: string; deleted?: boolean } = {}) => {
     const params = new URLSearchParams();
+    if (filters.deleted) params.set('deleted', 'true');
     if (filters.q) params.set('q', filters.q);
     if (filters.viewId) params.set('viewId', filters.viewId);
     if (filters.category) params.set('category', filters.category);
@@ -127,6 +128,12 @@ export const api = {
     if (filters.toDate) params.set('toDate', filters.toDate);
     return request(`/bills?${params.toString()}`);
   },
+
+  deleteBill: (billId: string, permanent = false) =>
+    request(`/bills/${billId}${permanent ? '?permanent=true' : ''}`, { method: 'DELETE' }),
+
+  restoreBill: (billId: string) =>
+    request(`/bills/${billId}/restore`, { method: 'POST' }),
 
   moveBill: (billId: string, viewId: string) =>
     request(`/bills/${billId}/move`, {

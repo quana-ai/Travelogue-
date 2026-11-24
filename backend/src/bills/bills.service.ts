@@ -86,7 +86,8 @@ export class BillsService {
           filePath: stored.filePath,
           fileHash: stored.fileHash,
           mimeType: file.mimetype,
-          currency: ocrResult.currency.value || 'INR',
+          // Amounts default to INR; the user can change the currency during review.
+          currency: 'INR',
           extractionMeta: JSON.stringify(ocrResult),
         },
       });
@@ -193,8 +194,8 @@ export class BillsService {
   /**
    * List bills with search and multi-criteria filtering.
    */
-  async listBills(userId: string, query: { q?: string; viewId?: string; category?: string; dateFilter?: string; fromDate?: string; toDate?: string }) {
-    const where: any = { userId };
+  async listBills(userId: string, query: { q?: string; viewId?: string; category?: string; dateFilter?: string; fromDate?: string; toDate?: string; deleted?: boolean }) {
+    const where: any = { userId, deletedAt: query.deleted ? { not: null } : null };
 
     if (query.viewId) {
       where.viewId = query.viewId;
@@ -251,6 +252,7 @@ export class BillsService {
         view: b.view ? { id: b.view.id, name: b.view.name } : null,
         sharesCount: b.shares.length,
         createdAt: b.createdAt,
+        deletedAt: b.deletedAt,
       };
     });
 
@@ -285,8 +287,8 @@ export class BillsService {
         id: billId,
         OR: [
           { userId },
-          { shares: { some: activeShare } },
-          { view: { is: { shares: { some: activeShare } } } },
+          { deletedAt: null, shares: { some: activeShare } },
+          { deletedAt: null, view: { is: { shares: { some: activeShare } } } },
         ],
       },
     });
@@ -321,5 +323,33 @@ export class BillsService {
     });
 
     return { success: true, message: `Moved to ${view.name}` };
+  }
+
+  /**
+   * Move a bill to "Deleted bills". It stays restorable until deleted permanently.
+   */
+  async deleteBill(userId: string, billId: string) {
+    const bill = await this.prisma.bill.findFirst({ where: { id: billId, userId, deletedAt: null } });
+    if (!bill) throw new NotFoundException('Bill not found');
+    await this.prisma.bill.update({ where: { id: billId }, data: { deletedAt: new Date() } });
+    return { success: true, message: 'Bill moved to Deleted bills' };
+  }
+
+  async restoreBill(userId: string, billId: string) {
+    const bill = await this.prisma.bill.findFirst({ where: { id: billId, userId, deletedAt: { not: null } } });
+    if (!bill) throw new NotFoundException('Deleted bill not found');
+    await this.prisma.bill.update({ where: { id: billId }, data: { deletedAt: null } });
+    return { success: true, message: 'Bill restored' };
+  }
+
+  /**
+   * Permanently remove a bill that is already in "Deleted bills", including its stored file.
+   */
+  async deleteBillPermanently(userId: string, billId: string) {
+    const bill = await this.prisma.bill.findFirst({ where: { id: billId, userId, deletedAt: { not: null } } });
+    if (!bill) throw new NotFoundException('Deleted bill not found');
+    await this.prisma.bill.delete({ where: { id: billId } });
+    await this.storageService.removeFile(bill.filePath);
+    return { success: true, message: 'Bill deleted permanently' };
   }
 }
