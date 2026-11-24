@@ -81,6 +81,9 @@ model Bill {
   // OCR extraction confidence metadata (JSON string of found/uncertain/missing)
   extractionMeta String?
 
+  // Soft delete: set when the user deletes the bill; restorable from "Deleted bills".
+  deletedAt      DateTime?
+
   shares         Share[]
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt

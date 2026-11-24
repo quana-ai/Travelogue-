@@ -283,7 +283,36 @@ export class OcrService implements OnModuleDestroy {
       pages = [buffer];
     }
 
-    // 4. Run OCR
+    // 4. Run OCR (if an image fails, retry it turned 90/270/180 degrees: phone photos are often sideways)
+    const first = await this.recognizePages(pages);
+    let best = this.validateRecognizedText(first.text, first.confidence);
+    if (!best.isReceipt && mimeType !== 'application/pdf' && first.text.trim()) {
+      for (const deg of [90, 270, 180]) {
+        const rotated = await this.rotateImage(buffer, deg).catch(() => null);
+        if (!rotated) continue;
+        const attempt = await this.recognizePages([rotated]);
+        const validated = this.validateRecognizedText(attempt.text, attempt.confidence);
+        if (validated.isReceipt) { best = validated; break; }
+      }
+    }
+    return best;
+  }
+
+  private async rotateImage(buffer: Buffer, deg: number): Promise<Buffer> {
+    const img = await loadImage(buffer);
+    const scale = Math.min(1, 2400 / Math.max(img.width, img.height));
+    const w = Math.round(img.width * scale);
+    const h = Math.round(img.height * scale);
+    const swap = deg === 90 || deg === 270;
+    const canvas = createCanvas(swap ? h : w, swap ? w : h);
+    const ctx = canvas.getContext('2d');
+    ctx.translate(canvas.width / 2, canvas.height / 2);
+    ctx.rotate((deg * Math.PI) / 180);
+    ctx.drawImage(img, -w / 2, -h / 2, w, h);
+    return canvas.toBuffer('image/png');
+  }
+
+  private async recognizePages(pages: Buffer[]): Promise<{ text: string; confidence: number }> {
     const recognition = this.queue.then(async () => {
       const worker = await this.getWorker();
       const texts: string[] = [];
@@ -301,9 +330,7 @@ export class OcrService implements OnModuleDestroy {
       };
     });
     this.queue = recognition.then(() => undefined, () => undefined);
-
-    const result = await recognition;
-    return this.validateRecognizedText(result.text, result.confidence);
+    return recognition;
   }
 
   async onModuleDestroy() {
@@ -413,9 +440,12 @@ export class OcrService implements OnModuleDestroy {
     const itemLines = this.extractItems(lines);
     const hasReceiptDetails = Boolean(date || billNo || tax || paymentLine || itemLines.length >= 2);
 
-    const isReceipt = Boolean(
-      merchant && hasAmount && hasReceiptDetails && (hasReceiptHeading || date || billNo || tax || paymentLine),
-    );
+    // A bill needs several independent bill signals. A missing merchant or a cut-off total alone
+    // should not reject a real bill (the user can fill those in), but random text or a photo of
+    // something else rarely shows 3+ of these together.
+    const signals = [hasReceiptHeading, Boolean(date), Boolean(billNo), Boolean(tax), Boolean(paymentLine), itemLines.length >= 2, hasAmount]
+      .filter(Boolean).length;
+    const isReceipt = signals >= 3 && (hasAmount || itemLines.length >= 2) && (hasReceiptHeading || Boolean(billNo) || Boolean(tax));
 
     const currency = /\b(?:INR|Rs\.?)\b|₹/i.test(text)
       ? 'INR'
@@ -428,7 +458,7 @@ export class OcrService implements OnModuleDestroy {
             : '';
 
     if (!isReceipt) {
-      const quality = hasReceiptHeading || hasReceiptDetails ? 'incomplete' : 'readable';
+      const quality = signals >= 2 && (hasReceiptHeading || Boolean(billNo)) ? 'incomplete' : 'readable';
       return this.createFailureResult(
         'NOT_A_BILL',
         quality === 'incomplete'

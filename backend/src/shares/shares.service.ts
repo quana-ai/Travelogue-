@@ -54,7 +54,7 @@ export class SharesService {
       },
       include: {
         bill: { include: { user: true, view: true } },
-        view: { include: { user: true, bills: { include: { view: true } } } },
+        view: { include: { user: true, bills: { where: { deletedAt: null }, include: { view: true } } } },
       },
       orderBy: { createdAt: 'desc' },
     });
@@ -63,7 +63,7 @@ export class SharesService {
       const owner = share.view?.user || share.bill?.user;
       const bills = share.view
         ? share.view.bills.map((bill) => this.presentBill(bill))
-        : share.bill
+        : share.bill && !share.bill.deletedAt
           ? [this.presentBill(share.bill)]
           : [];
 
@@ -91,7 +91,7 @@ export class SharesService {
 
     let target: { billId?: string; viewId?: string; name: string };
     if (dto.targetType === 'bill') {
-      const bill = await this.prisma.bill.findFirst({ where: { id: dto.targetId, userId } });
+      const bill = await this.prisma.bill.findFirst({ where: { id: dto.targetId, userId, deletedAt: null } });
       if (!bill) throw new NotFoundException('Bill not found');
       target = {
         billId: bill.id,
