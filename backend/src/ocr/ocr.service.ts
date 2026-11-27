@@ -435,7 +435,7 @@ export class OcrService implements OnModuleDestroy {
     const tax = this.extractTax(lines);
     const paymentLine = lines.find((line) => /\b(?:cash|credit\s*card|debit\s*card|visa|mastercard|upi|gpay|paytm|phonepe|net\s*banking|paid\s*by|payment\s*method)\b/i.test(line));
 
-    const hasReceiptHeading = /\b(?:receipt|tax\s*invoice|retail\s*invoice|invoice|bill|gstin|gst\s*in|cash\s*memo|cash\s*bill|inv(?:oice)?\s*no)\b/i.test(text);
+    const hasReceiptHeading = /\b(?:receipt|tax\s*invoice|retail\s*invoice|invoice|bill|gstin|gst\s*in|cash\s*memo|cash\s*bill|inv(?:oice)?\s*no|e-?ticket|ticket\s*(?:no|number|price|details)|pnr|booking\s*(?:id|details)|boarding\s*pass)\b/i.test(text);
     const hasAmount = Boolean(total);
     const itemLines = this.extractItems(lines);
     const hasReceiptDetails = Boolean(date || billNo || tax || paymentLine || itemLines.length >= 2);
@@ -586,10 +586,10 @@ export class OcrService implements OnModuleDestroy {
 
   private extractBillNo(lines: string[]): string {
     for (const line of lines) {
-      const match = line.match(/\b(?:invoice|inv|bill|receipt|order|token|txn|check|doc(?:ument)?)\s*(?:no\.?|num(?:ber)?|id|ref|#|:|-)*\s*[:#-\s]\s*([A-Z0-9][A-Z0-9./_-]{2,})/i);
+      const match = line.match(/\b(?:invoice|inv|bill|receipt|order|token|txn|check|doc(?:ument)?|ticket|pnr|booking)\s*(?:no\.?|num(?:ber)?|id|ref|#|:|-)*\s*[:#-\s]\s*([A-Z0-9][A-Z0-9./_-]{2,})/i);
       if (match && match[1]) {
         const val = match[1].trim();
-        if (!/^(?:total|amount|cash|card|due|paid|date|summary|details|tax|gst)$/i.test(val)) {
+        if (/\d/.test(val) && !/^(?:total|amount|cash|card|due|paid|date|summary|details|tax|gst)$/i.test(val)) {
           return val;
         }
       }
@@ -598,7 +598,15 @@ export class OcrService implements OnModuleDestroy {
   }
 
   private extractTotal(lines: string[]): string {
-    const totalKeywords = /\b(?:grand\s*total|total\s*(?:amount|due|payable)?|net\s*(?:amount|payable|total)?|amount\s*(?:due|paid|payable)?|balance\s*(?:due|payable)?|final\s*amount|bill\s*total|amt\s*due)\b/i;
+    const totalKeywords = /\b(?:grand\s*total|total\s*(?:amount|due|payable)?|net\s*(?:amount|payable|total)?|amount\s*(?:due|paid|payable)?|balance\s*(?:due|payable)?|final\s*amount|bill\s*total|amt\s*due|total\s*fare)\b/i;
+
+    // 0. Tickets and bookings: "Ticket Price", "Total Fare", "Booking Amount" (amount on the line or the next)
+    for (let i = 0; i < lines.length; i++) {
+      if (/\b(?:ticket\s*(?:price|fare|amount)|total\s*fare|booking\s*amount|fare\s*paid)\b/i.test(lines[i])) {
+        const amt = this.parseAmount(lines[i]) || (i + 1 < lines.length ? this.parseAmount(lines[i + 1]) : '');
+        if (amt) return amt;
+      }
+    }
 
     // 1. Search in reverse for specific total lines with amount
     for (let i = lines.length - 1; i >= 0; i--) {
