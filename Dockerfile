@@ -1,7 +1,7 @@
 # ==========================================
 # 1. Backend Build Stage
 # ==========================================
-FROM node:20-bookworm-slim AS backend-builder
+FROM node:22-bookworm-slim AS backend-builder
 
 WORKDIR /app/backend
 
@@ -19,7 +19,7 @@ RUN npm run build
 # ==========================================
 # 2. Frontend Build Stage
 # ==========================================
-FROM node:20-bookworm-slim AS frontend-builder
+FROM node:22-bookworm-slim AS frontend-builder
 
 WORKDIR /app/frontend
 
@@ -37,7 +37,7 @@ RUN npm run build
 # ==========================================
 # 3. Unified Monorepo Runner Stage
 # ==========================================
-FROM node:20-bookworm-slim AS runner
+FROM node:22-bookworm-slim AS runner
 
 WORKDIR /app
 
